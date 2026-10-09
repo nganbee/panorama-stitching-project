@@ -4,8 +4,8 @@
 // Description: V0 (sequential) Stage 1 (grayscale + separable Gaussian blur)
 //              and Stage 2 (Harris response, NMS, top-K).
 // External sources: none
-#include "common.h"
-#include "v0_stages.h"
+#include "../core_headers/common.h"
+#include "../core_headers/v0_stages.h"
 #include <algorithm>
 #include <cmath>
 

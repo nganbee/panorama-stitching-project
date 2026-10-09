@@ -2,8 +2,8 @@
 // Description: Self-tests for V0 Stage 1 (gray + blur) and Stage 2 (Harris + NMS + top-K).
 //              Synthetic inputs only; no file I/O. Output lines: [SELFTEST] <name> PASS|FAIL <detail>
 // External sources: none
-#include "common.h"
-#include "v0_stages.h"
+#include "../core_headers/common.h"
+#include "../core_headers/v0_stages.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

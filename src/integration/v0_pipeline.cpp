@@ -4,9 +4,9 @@
 //              Timings of Stage 1-3 are the SUM over image A and image B.
 //              Image loading/saving is NOT part of this function (excluded from timing).
 // External sources: none
-#include "common.h"
-#include "versions.h"
-#include "v0_stages.h"
+#include "../core_headers/common.h"
+#include "../core_headers/versions.h"
+#include "../core_headers/v0_stages.h"
 #include <chrono>
 
 namespace {
