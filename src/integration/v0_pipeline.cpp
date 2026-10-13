@@ -1,4 +1,5 @@
 // File: v0_pipeline.cpp
+// Authors: Team 8 (integration)
 // Description: V0 (sequential) pipeline glue. Calls the stage functions declared in v0_stages.h
 //              in order and fills StageTimes with per-stage CPU timings.
 //              Timings of Stage 1-3 are the SUM over image A and image B.
@@ -50,7 +51,9 @@ void extract_features(const Image& img, Features& f, StageTimes& t) {
 }  // namespace
 
 bool run_v0(const Image& A, const Image& B, PipelineResult& out) {
+    const bool collect_debug = out.collect_debug;
     out = PipelineResult{};
+    out.collect_debug = collect_debug;
     StageTimes& t = out.times;
     const auto t_total = Clock::now();
 
@@ -59,12 +62,17 @@ bool run_v0(const Image& A, const Image& B, PipelineResult& out) {
     extract_features(B, fb, t);
     out.nKpA = (int)fa.kps.size();
     out.nKpB = (int)fb.kps.size();
+    if (collect_debug) {
+        out.keypointsA = fa.kps;
+        out.keypointsB = fb.kps;
+    }
 
     std::vector<Match> matches;
     auto s = Clock::now();
     v0_match(fa.desc, fb.desc, matches);
     t.match = ms_since(s);
     out.nMatches = (int)matches.size();
+    if (collect_debug) out.matches = matches;
     if (matches.size() < 4) { t.end_to_end = ms_since(t_total); return false; }   // DLT needs >= 4
 
     s = Clock::now();

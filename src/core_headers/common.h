@@ -74,5 +74,11 @@ struct PipelineResult {
     Image panorama;
     Homography H{};
     int nKpA = 0, nKpB = 0, nMatches = 0, nInliers = 0;
+    bool collect_debug = false;
+    // Optional diagnostics retained for the CLI debug artifacts. They are not
+    // used by the timed pipeline and keep the S1-S2 stage interfaces unchanged.
+    std::vector<Keypoint> keypointsA;
+    std::vector<Keypoint> keypointsB;
+    std::vector<Match> matches;
     StageTimes times;
 };
