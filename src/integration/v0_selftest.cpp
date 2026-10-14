@@ -1,4 +1,5 @@
 // File: v0_selftest.cpp
+// Authors: Team 8; maintenance assisted by OpenAI Codex.
 // Description: Self-tests for V0 Stage 1 (gray + blur) and Stage 2 (Harris + NMS + top-K).
 //              Synthetic inputs only; no file I/O. Output lines: [SELFTEST] <name> PASS|FAIL <detail>
 // External sources: none

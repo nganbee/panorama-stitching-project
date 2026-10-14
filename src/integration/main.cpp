@@ -4,6 +4,7 @@
 //              Image I/O is outside the timed pipeline.
 // External sources: stb_image and stb_image_write by Sean Barrett (public domain/MIT).
 #include "../core_headers/versions.h"
+#include "../core_headers/report_io.h"
 #include "../libraries/stb_image.h"
 #include "../libraries/stb_image_write.h"
 #include <algorithm>
@@ -15,6 +16,10 @@
 #include <fstream>
 #include <string>
 #include <utility>
+#include <iostream>
+#include <cerrno>
+#include <climits>
+#include <cctype>
 
 namespace {
 
@@ -34,8 +39,17 @@ bool load_rgb(const char* path, Image& image) {
 }
 
 bool save_rgb(const char* path, const Image& image) {
-    if (image.w <= 0 || image.h <= 0 || image.data.empty()) return false;
-    return stbi_write_png(path, image.w, image.h, 3, image.data.data(), image.w * 3) != 0;
+    if (!valid_rgb_image(image)) return false;
+    std::string name(path);
+    const size_t dot = name.find_last_of('.');
+    std::string ext = dot == std::string::npos ? "" : name.substr(dot);
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext == ".jpg" || ext == ".jpeg")
+        return stbi_write_jpg(path, image.w, image.h, 3, image.data.data(), 95) != 0;
+    if (ext == ".png")
+        return stbi_write_png(path, image.w, image.h, 3, image.data.data(), image.w * 3) != 0;
+    std::fprintf(stderr, "Output must have .png, .jpg or .jpeg extension.\n");
+    return false;
 }
 
 void put_pixel(Image& image, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
@@ -148,6 +162,7 @@ bool save_debug_artifacts(const std::string& prefix, const Image& A, const Image
                           const PipelineResult& result) {
     std::ofstream homography(prefix + "_homography.txt");
     if (!homography) return false;
+    homography << std::setprecision(17);
     homography << "# H maps image B coordinates into image A coordinates\n";
     homography << "# rows: 3x3, normalized so H[2][2] = 1\n";
     homography << result.H.h[0] << ' ' << result.H.h[1] << ' ' << result.H.h[2] << '\n';
@@ -167,12 +182,42 @@ bool save_debug_artifacts(const std::string& prefix, const Image& A, const Image
 void print_usage(const char* program) {
     std::fprintf(stderr,
         "Usage: %s <left_image> <right_image> <output_image> "
-        "--version 0 [--runs N] [--debug-prefix PREFIX]\n", program);
+        "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
+        "       %s --dump-params | --list-versions | --help\n"
+        "       %s --selftest --version N (CUDA build, N=1..3)\n", program, program, program);
+}
+
+bool parse_int(const char* value, int& out) {
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno || end == value || *end || parsed < 0 || parsed > INT_MAX) return false;
+    out = static_cast<int>(parsed);
+    return true;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 4 && std::strcmp(argv[1], "--selftest") == 0 &&
+        std::strcmp(argv[2], "--version") == 0) {
+        int version = -1;
+        if (!parse_int(argv[3], version) || version < 1 || version > 3) return 2;
+#ifdef PANORAMA_WITH_CUDA
+        return cuda_selftest(version) ? 0 : 1;
+#else
+        std::fprintf(stderr, "CUDA selftests require a --cuda build. CPU tests are separate binaries.\n");
+        return 2;
+#endif
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--help") == 0) { print_usage(argv[0]); return 0; }
+    if (argc == 2 && std::strcmp(argv[1], "--dump-params") == 0) {
+        write_parameters_json(std::cout); return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--list-versions") == 0) {
+        for (int v=0; v<=3; ++v) if (get_version(v)) std::printf("%d\n", v);
+        return 0;
+    }
     if (argc < 6) {
         print_usage(argv[0]);
         return 2;
@@ -184,14 +229,17 @@ int main(int argc, char** argv) {
     int version = -1;
     int runs = 5;
     std::string debug_prefix;
+    std::string json_path;
 
     for (int i = 4; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 && i + 1 < argc) {
-            version = std::atoi(argv[++i]);
+            if (!parse_int(argv[++i], version)) { print_usage(argv[0]); return 2; }
         } else if (std::strcmp(argv[i], "--runs") == 0 && i + 1 < argc) {
-            runs = std::atoi(argv[++i]);
+            if (!parse_int(argv[++i], runs)) { print_usage(argv[0]); return 2; }
         } else if (std::strcmp(argv[i], "--debug-prefix") == 0 && i + 1 < argc) {
             debug_prefix = argv[++i];
+        } else if (std::strcmp(argv[i], "--json") == 0 && i + 1 < argc) {
+            json_path = argv[++i];
         } else {
             print_usage(argv[0]);
             return 2;
@@ -204,19 +252,27 @@ int main(int argc, char** argv) {
     }
 
     const PipelineFn pipeline = get_version(version);
+    auto fail = [&](const std::string& error) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        if (!json_path.empty()) {
+            std::ofstream output(json_path);
+            if (output) output << "{\"schema_version\":1,\"status\":\"failed\",\"version\":"
+                               << version << ",\"error\":" << json_string(error) << "}\n";
+        }
+        return 1;
+    };
     if (pipeline == nullptr) {
-        std::fprintf(stderr, "Unsupported version: %d\n", version);
+        fail("Unsupported version in this build. Use --list-versions; CUDA requires --cuda build.");
         return 2;
     }
 
     Image A, B;
-    if (!load_rgb(left_path, A) || !load_rgb(right_path, B)) return 1;
+    if (!load_rgb(left_path, A) || !load_rgb(right_path, B)) return fail("Cannot load input images.");
 
     // Warm-up removes first-allocation effects from the reported averages.
     PipelineResult warmup;
     if (!pipeline(A, B, warmup)) {
-        std::fprintf(stderr, "Warm-up pipeline failed: too few matches or invalid homography.\n");
-        return 1;
+        return fail("Warm-up pipeline failed: too few matches, invalid homography, or unavailable device.");
     }
 
     StageTimes sum{};
@@ -224,8 +280,7 @@ int main(int argc, char** argv) {
     for (int run = 0; run < runs; ++run) {
         PipelineResult current;
         if (!pipeline(A, B, current)) {
-            std::fprintf(stderr, "Pipeline failed on timed run %d.\n", run + 1);
-            return 1;
+            return fail("Pipeline failed on timed run " + std::to_string(run + 1));
         }
         sum.gray += current.times.gray;
         sum.blur += current.times.blur;
@@ -236,6 +291,9 @@ int main(int argc, char** argv) {
         sum.ransac += current.times.ransac;
         sum.warp_blend += current.times.warp_blend;
         sum.end_to_end += current.times.end_to_end;
+        sum.h2d += current.times.h2d;
+        sum.d2h += current.times.d2h;
+        sum.kernel_total += current.times.kernel_total;
         last = std::move(current);
     }
 
@@ -249,7 +307,7 @@ int main(int argc, char** argv) {
                 last.nMatches > 0 ? static_cast<double>(last.nInliers) / last.nMatches : 0.0);
     std::printf("avg_ms gray=%.3f blur=%.3f harris=%.3f nms_topk=%.3f "
                 "describe=%.3f match=%.3f ransac=%.3f warp_blend=%.3f "
-                "end_to_end=%.3f\n",
+                "h2d=%.3f d2h=%.3f kernel_total=%.3f end_to_end=%.3f\n",
                 sum.gray * inv_runs,
                 sum.blur * inv_runs,
                 sum.harris * inv_runs,
@@ -258,11 +316,13 @@ int main(int argc, char** argv) {
                 sum.match * inv_runs,
                 sum.ransac * inv_runs,
                 sum.warp_blend * inv_runs,
+                sum.h2d * inv_runs,
+                sum.d2h * inv_runs,
+                sum.kernel_total * inv_runs,
                 sum.end_to_end * inv_runs);
 
     if (!save_rgb(output_path, last.panorama)) {
-        std::fprintf(stderr, "Cannot save panorama: %s\n", output_path);
-        return 1;
+        return fail(std::string("Cannot save panorama: ") + output_path);
     }
     if (!debug_prefix.empty()) {
         // Collect diagnostics in a separate, untimed run so normal benchmark
@@ -272,8 +332,21 @@ int main(int argc, char** argv) {
         if (!pipeline(A, B, debug_result) ||
             !save_debug_artifacts(debug_prefix, A, B, debug_result)) {
             std::fprintf(stderr, "Cannot save debug artifacts with prefix: %s\n", debug_prefix.c_str());
-            return 1;
+            return fail("Cannot save debug artifacts.");
         }
+    }
+    if (!json_path.empty()) {
+        StageTimes average = sum;
+        average.gray *= inv_runs; average.blur *= inv_runs;
+        average.harris *= inv_runs; average.nms_topk *= inv_runs;
+        average.describe *= inv_runs; average.match *= inv_runs;
+        average.ransac *= inv_runs; average.warp_blend *= inv_runs;
+        average.h2d *= inv_runs; average.d2h *= inv_runs;
+        average.kernel_total *= inv_runs; average.end_to_end *= inv_runs;
+        std::ofstream output(json_path);
+        if (!output) return fail("Cannot write metrics JSON: " + json_path);
+        write_metrics_json(output, version, runs, A, B, last, average, output_path);
+        if (!output) return fail("Failed writing metrics JSON: " + json_path);
     }
     return 0;
 }

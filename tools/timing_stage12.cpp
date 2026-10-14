@@ -17,7 +17,7 @@
 
 namespace {
 
-using Clock = std::chrono::high_resolution_clock;
+using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -148,14 +148,14 @@ void benchmark(int w, int h, int runs, const Image* base_a, const Image* base_b)
 
     const double inv_runs = 1.0 / static_cast<double>(runs);
     std::printf("resolution=%dx%d,runs=%d,avg_ms_gray=%.3f,avg_ms_blur=%.3f,"
-                "avg_ms_harris=%.3f,avg_ms_nms_topk=%.3f,keypoints_A=%zu,keypoints_B=%zu\n",
+                "avg_ms_harris=%.3f,avg_ms_nms_topk=%.3f,keypoints_A=%u,keypoints_B=%u\n",
                 w, h, runs,
                 sum.gray * inv_runs,
                 sum.blur * inv_runs,
                 sum.harris * inv_runs,
                 sum.nms_topk * inv_runs,
-                sum.keypoints_a,
-                sum.keypoints_b);
+                static_cast<unsigned>(sum.keypoints_a),
+                static_cast<unsigned>(sum.keypoints_b));
 }
 
 }  // namespace

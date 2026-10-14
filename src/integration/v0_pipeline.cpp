@@ -12,7 +12,7 @@
 
 namespace {
 
-using Clock = std::chrono::high_resolution_clock;
+using Clock = std::chrono::steady_clock;
 
 inline double ms_since(Clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -54,6 +54,7 @@ bool run_v0(const Image& A, const Image& B, PipelineResult& out) {
     const bool collect_debug = out.collect_debug;
     out = PipelineResult{};
     out.collect_debug = collect_debug;
+    if (!valid_rgb_image(A) || !valid_rgb_image(B)) return false;
     StageTimes& t = out.times;
     const auto t_total = Clock::now();
 
@@ -85,5 +86,5 @@ bool run_v0(const Image& A, const Image& B, PipelineResult& out) {
     t.warp_blend = ms_since(s);
 
     t.end_to_end = ms_since(t_total);
-    return true;
+    return valid_rgb_image(out.panorama);
 }

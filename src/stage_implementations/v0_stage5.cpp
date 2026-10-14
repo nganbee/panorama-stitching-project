@@ -1,5 +1,5 @@
 // File: v0_stage5.cpp
-// Authors: Team 8 (integration draft; TV3 review required)
+// Authors: Team 8; maintenance assisted by OpenAI Codex.
 // Description: V0 (sequential) homography estimation using deterministic
 //              RANSAC, 4-point DLT, reprojection-error scoring, and an
 //              inlier-only least-squares refinement.
@@ -99,11 +99,12 @@ Point apply_h(const double h[9], const Point& p, bool& valid) {
         valid = false;
         return {};
     }
-    valid = true;
-    return {
+    Point mapped{
         (h[0] * p.x + h[1] * p.y + h[2]) / z,
         (h[3] * p.x + h[4] * p.y + h[5]) / z
     };
+    valid = std::isfinite(mapped.x) && std::isfinite(mapped.y);
+    return mapped;
 }
 
 void multiply3x3(const double a[9], const double b[9], double out[9]) {
@@ -116,8 +117,9 @@ void multiply3x3(const double a[9], const double b[9], double out[9]) {
 }
 
 bool normalize_homography(double h[9]) {
-    if (std::fabs(h[8]) < kEpsilon) return false;
+    if (!std::isfinite(h[8]) || std::fabs(h[8]) < kEpsilon) return false;
     for (int i = 0; i < 9; ++i) h[i] /= h[8];
+    for (int i = 0; i < 9; ++i) if (!std::isfinite(h[i])) return false;
     return true;
 }
 
@@ -192,6 +194,7 @@ bool v0_ransac_homography(const std::vector<Keypoint>& kpA,
                           Homography& H,
                           int& nInliers) {
     nInliers = 0;
+    H = Homography{};
     if (matches.size() < 4) return false;
 
     std::vector<Point> src;
@@ -201,6 +204,8 @@ bool v0_ransac_homography(const std::vector<Keypoint>& kpA,
     for (const auto& m : matches) {
         if (m.idxA < 0 || m.idxA >= static_cast<int>(kpA.size()) ||
             m.idxB < 0 || m.idxB >= static_cast<int>(kpB.size())) continue;
+        if (!std::isfinite(kpA[m.idxA].x) || !std::isfinite(kpA[m.idxA].y) ||
+            !std::isfinite(kpB[m.idxB].x) || !std::isfinite(kpB[m.idxB].y)) continue;
         // H maps image B (source) into image A (destination).
         src.push_back({kpB[m.idxB].x, kpB[m.idxB].y});
         dst.push_back({kpA[m.idxA].x, kpA[m.idxA].y});
@@ -249,6 +254,9 @@ bool v0_ransac_homography(const std::vector<Keypoint>& kpA,
 
     if (best_inliers.size() < 4) return false;
     if (!estimate_homography(src, dst, best_inliers, H.h)) return false;
-    nInliers = static_cast<int>(best_inliers.size());
-    return true;
+    // Report the consensus of the returned, refined H, not the old hypothesis.
+    for (size_t i = 0; i < src.size(); ++i)
+        if (squared_reprojection_error(H.h, src[i], dst[i]) <=
+            double(params::kRansacThresh) * params::kRansacThresh) ++nInliers;
+    return nInliers >= 4;
 }

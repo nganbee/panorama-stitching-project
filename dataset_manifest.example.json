@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "dataset_url": "",
+  "sites": [
+    {"site_id": "site1", "display_name": "", "registration": ""},
+    {"site_id": "site2", "display_name": "", "registration": ""},
+    {"site_id": "site3", "display_name": "", "registration": ""}
+  ],
+  "pairs": [
+    {"pair_id": "site1_standard", "site_id": "site1", "kind": "standard", "left": "data/site1/left.jpg", "right": "data/site1/right.jpg", "raw_left": "raw/site1/left.jpg", "raw_right": "raw/site1/right.jpg", "notes": ""},
+    {"pair_id": "site2_standard", "site_id": "site2", "kind": "standard", "left": "data/site2/left.jpg", "right": "data/site2/right.jpg", "raw_left": "raw/site2/left.jpg", "raw_right": "raw/site2/right.jpg", "notes": ""},
+    {"pair_id": "site3_standard", "site_id": "site3", "kind": "standard", "left": "data/site3/left.jpg", "right": "data/site3/right.jpg", "raw_left": "raw/site3/left.jpg", "raw_right": "raw/site3/right.jpg", "notes": ""},
+    {"pair_id": "site1_challenging", "site_id": "site1", "kind": "challenging", "left": "data/site1/challenge_left.jpg", "right": "data/site1/challenge_right.jpg", "raw_left": "raw/site1/challenge_left.jpg", "raw_right": "raw/site1/challenge_right.jpg", "notes": "Nhóm ghi nguyên nhân thách thức: parallax, ánh sáng, lặp họa tiết, hoặc ít overlap."}
+  ]
+}

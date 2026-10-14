@@ -1,5 +1,5 @@
 // File: v0_stage34.cpp
-// Authors: Team 8 (integration draft; TV2 review required)
+// Authors: Team 8; maintenance assisted by OpenAI Codex.
 // Description: V0 (sequential) Stage 3 BRIEF descriptors and Stage 4
 //              brute-force Hamming matching with Lowe ratio test and
 //              mutual-nearest-neighbour cross-check.
@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 
 namespace {
@@ -81,10 +82,19 @@ void v0_describe(const Gray& blurred,
                  const std::vector<Keypoint>& kps,
                  std::vector<Descriptor>& desc) {
     desc.assign(kps.size(), Descriptor{});
-    const int radius = params::kPatchSize / 2;
+    if (!valid_gray_image(blurred)) {
+        desc.clear();
+        return;
+    }
     const auto& pattern = brief_pattern();
 
     for (size_t i = 0; i < kps.size(); ++i) {
+        if (!std::isfinite(kps[i].x) || !std::isfinite(kps[i].y) ||
+            kps[i].x < 0 || kps[i].x >= blurred.w ||
+            kps[i].y < 0 || kps[i].y >= blurred.h) {
+            desc.clear();
+            return;
+        }
         const int cx = static_cast<int>(kps[i].x);
         const int cy = static_cast<int>(kps[i].y);
         for (int bit = 0; bit < 256; ++bit) {

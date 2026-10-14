@@ -1,8 +1,9 @@
 // File: tools/debug_keypoints.cpp
+// Authors: Team 8; maintenance assisted by OpenAI Codex.
 // Description: Debug tool for Stage 1-2 on real images (NOT part of the submitted build).
 //              Runs gray -> blur -> Harris -> NMS/top-K on both images, saves gray/blur/keypoint
 //              overlays and prints keypoint counts, overlap-strip counts and per-stage timings.
-//              Build: g++ -O2 -std=c++17 -I src tools/debug_keypoints.cpp src/stage_implementations/v0_stage12.cpp src/libraries/stb_impl.cpp -o dbg
+//              Build: g++ -O2 -std=c++17 -Isrc/core_headers -Isrc/libraries tools/debug_keypoints.cpp src/stage_implementations/v0_stage12.cpp src/libraries/stb_impl.cpp -o dbg
 //              Run:   ./dbg data/left.png data/right.png [out_prefix]
 // External sources: stb_image / stb_image_write
 #include "common.h"
@@ -14,7 +15,7 @@
 #include <string>
 #include <algorithm>
 
-using Clock = std::chrono::high_resolution_clock;
+using Clock = std::chrono::steady_clock;
 static double ms(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
 static bool load(const char* p, Image& im) {
@@ -52,8 +53,8 @@ static void process(const char* name, const Image& im, const std::string& prefix
     // overlap strip: right half of the left image / left half of the right image
     int in_strip = 0;
     for (const auto& k : kps) if (is_left ? (k.x >= im.w / 2) : (k.x < im.w / 2)) ++in_strip;
-    std::printf("[%s] %dx%d keypoints=%zu in_overlap_half=%d (%.0f%%)\n", name, im.w, im.h,
-                kps.size(), in_strip, kps.empty() ? 0.0 : 100.0 * in_strip / kps.size());
+    std::printf("[%s] %dx%d keypoints=%u in_overlap_half=%d (%.0f%%)\n", name, im.w, im.h,
+                static_cast<unsigned>(kps.size()), in_strip, kps.empty() ? 0.0 : 100.0 * in_strip / kps.size());
     std::printf("[%s] avg_ms gray=%.3f blur=%.3f harris=%.3f nms_topk=%.3f\n", name,
                 t[0] / runs, t[1] / runs, t[2] / runs, t[3] / runs);
     save_gray(prefix + "_" + name + "_gray.png", gray);
