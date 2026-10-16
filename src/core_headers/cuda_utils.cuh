@@ -1,0 +1,1 @@
+// macro CUDA_CHECK, GpuTimer
