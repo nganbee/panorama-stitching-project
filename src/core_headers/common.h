@@ -1,9 +1,13 @@
-// Data types, common pipeline parameters for all versions
+// File: common.h
+// Authors: Team 8; maintenance assisted by OpenAI Codex.
+// Description: Shared data types and parameters for all pipeline versions.
+// External sources: none.
 
 #pragma once
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <limits>
 
 struct Image {
     int w = 0;
@@ -12,11 +16,25 @@ struct Image {
     std::vector<uint8_t> data; // RGB image data
 };
 
+inline bool valid_rgb_image(const Image& image) {
+    if (image.w <= 0 || image.h <= 0 || image.c != 3) return false;
+    const size_t w = static_cast<size_t>(image.w), h = static_cast<size_t>(image.h);
+    if (w > std::numeric_limits<size_t>::max() / h / 3) return false;
+    return image.data.size() == w * h * 3;
+}
+
 struct Gray {
     int w = 0;
     int h = 0;
     std::vector<float> data; // Grayscale image data
 };
+
+inline bool valid_gray_image(const Gray& image) {
+    if (image.w <= 0 || image.h <= 0) return false;
+    const size_t w = static_cast<size_t>(image.w), h = static_cast<size_t>(image.h);
+    if (w > std::numeric_limits<size_t>::max() / h) return false;
+    return image.data.size() == w * h;
+}
 
 struct Keypoint {
     float x = 0.0f;
@@ -31,7 +49,7 @@ struct Descriptor {
 struct Match {
     int idxA = -1; // Index of the keypoint in the first image
     int idxB = -1; // Index of the keypoint in the second image
-    int dist; // Hamming distance between the two descriptors
+    int dist = 0; // Hamming distance between the two descriptors
 };
 
 struct Homography {
