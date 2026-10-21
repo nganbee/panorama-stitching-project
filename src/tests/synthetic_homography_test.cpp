@@ -3,8 +3,8 @@
 // Description: Deterministic V0 S5 correctness check against a known
 //              translation homography with additional outlier matches.
 // External sources: none.
-#include "../src/core_headers/common.h"
-#include "../src/core_headers/v0_stages.h"
+#include "../core_headers/common.h"
+#include "../core_headers/v0_stages.h"
 #include <cmath>
 #include <cstdio>
 #include <vector>
