@@ -1,5 +1,36 @@
 # Panorama stitching project
 
+## V1 CUDA S3-S4 (global-memory baseline)
+
+The independent GPU implementation lives in
+`src/stage_implementations/v1_stage34.cu`, with interfaces in
+`src/core_headers/v1_stage34.h`. Call `v1_describe` for each blurred image
+and its keypoints, then `v1_match` on the two descriptor vectors. The host
+wrappers allocate buffers, copy data, and launch kernels. BRIEF pattern
+generation, descriptor calculation, nearest-neighbour searches, ratio test,
+mutual cross-check, and ordered match compaction all run on the GPU.
+CUDA errors throw exceptions; there is no CPU fallback.
+
+This is only the S3-S4 contribution, not a complete `--version 1` pipeline.
+Keep V0 as the CPU reference. S1-S2 and S5-S6 must have their own GPU
+implementations before enabling the CUDA pipeline registry. Intermediate
+host buffers are supported by these interfaces. Calls are synchronous;
+wall-clock measurements include allocation and transfers, not just kernels.
+Compaction deliberately uses one GPU thread for this simple baseline.
+
+Build and run the parity test on a machine with the CUDA toolkit and GPU
+(the CPU functions here are used only as a test oracle):
+
+```bash
+nvcc -O2 -std=c++17 tools/run_stage34_cuda_selftest.cpp src/stage_implementations/v0_stage34.cpp src/stage_implementations/v1_stage34.cu -o stage34_cuda_selftest
+./stage34_cuda_selftest
+compute-sanitizer ./stage34_cuda_selftest
+```
+
+The test checks all descriptor bits and ordered match fields against V0,
+including borders, fractional coordinates, invalid keypoints, empty inputs,
+single candidates, duplicate descriptors, and unequal descriptor counts.
+
 ## V0 build
 
 The V0 implementation is a single-threaded C++17 pipeline. From the project root:
