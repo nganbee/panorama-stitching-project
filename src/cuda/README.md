@@ -39,10 +39,12 @@ ascending. Matching keeps the first index at tied distances, requires a second
 neighbour, rejects a zero-distance ambiguity and applies the same ratio test
 and mutual-nearest-neighbour cross-check. The homography maps **B into A**.
 The normalized 8-parameter least-squares solver uses doubles and partial pivoting.
-Sampling uses the same host MT19937 seed and sampling loop as V0. V3 sums scoring
-errors in a different reduction order, so tied or nearly tied hypotheses may
-choose a different equally valid result. Check final reprojection accuracy,
-inliers and panorama tolerance rather than requiring bit-identical homographies.
+Sampling uses deterministic per-hypothesis xorshift32 streams seeded from
+`kRansacSeed` on the device. This keeps V1/V2/V3 on the same sample sequence;
+the sequence differs from V0's host MT19937 sampler. V3 sums scoring errors in
+a different reduction order, so tied or nearly tied hypotheses may choose a
+different equally valid result. Check final reprojection accuracy, inliers and
+panorama tolerance rather than requiring bit-identical homographies.
 
 The warp uses inclusive pixel-center bounds, scale-relative projective guards,
 boundary tolerance, double interpolation and one final rounded RGB conversion.
@@ -60,10 +62,10 @@ corresponding stage time and in end-to-end time:
 * NMS: deterministic candidate partial-sort/top-K after device compaction. The
   sorted keypoints are uploaded for BRIEF.
 * Matching: raster-order compaction of accepted device match records.
-* RANSAC: seeded four-index sampling, best-hypothesis selection from device
-  scores, and one normalized least-squares fit of the device-selected inliers.
-  The final inlier count is recomputed on the GPU after this fit. The host does
-  not perform a second full RANSAC search.
+* RANSAC: the host uploads keypoints and accepted matches, then downloads only
+  the final homography and inlier count. Correspondence filtering, seeded
+  four-index sampling, hypothesis estimation/scoring, best-model selection,
+  normalized least-squares refinement and final inlier counting run on device.
 * Warp: four-corner canvas validation/bounds and the linear-time largest
   axis-aligned rectangle crop of the downloaded device coverage mask.
 

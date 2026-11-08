@@ -13,7 +13,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -225,19 +224,68 @@ __global__ void crosscheck_kernel(const Nearest* forward, const Nearest* reverse
         reverse[m.index].index == i) out[i] = {i, m.index, m.best};
 }
 
-__global__ void hypotheses_kernel(const Point* src, const Point* dst, const int* samples,
+__global__ void prepare_correspondences_kernel(
+    const Keypoint* kpA, int nKpA, const Keypoint* kpB, int nKpB,
+    const Match* matches, int nMatches, Point* src, Point* dst, int* nValid) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    int count = 0;
+    for (int i = 0; i < nMatches; ++i) {
+        const Match match = matches[i];
+        if (match.idxA < 0 || match.idxA >= nKpA ||
+            match.idxB < 0 || match.idxB >= nKpB) continue;
+        const Keypoint a = kpA[match.idxA];
+        const Keypoint b = kpB[match.idxB];
+        if (!cuda_homography::finite(a.x) || !cuda_homography::finite(a.y) ||
+            !cuda_homography::finite(b.x) || !cuda_homography::finite(b.y)) continue;
+        // Keep the same stable order as V0; H maps points from B into A.
+        src[count] = {static_cast<double>(b.x), static_cast<double>(b.y)};
+        dst[count] = {static_cast<double>(a.x), static_cast<double>(a.y)};
+        ++count;
+    }
+    *nValid = count;
+}
+
+__device__ uint32_t next_ransac_random(uint32_t& state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+__global__ void hypotheses_kernel(const Point* src, const Point* dst, const int* nValid,
                                   Homography* models, int* valid, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) valid[i] = cuda_homography::estimate(src,dst,samples+4*i,4,models[i]) ? 1 : 0;
+    if (i >= n) return;
+    valid[i] = 0;
+    const int count = *nValid;
+    if (count < 4) return;
+
+    // Fixed per-hypothesis streams are deterministic and unaffected by thread
+    // scheduling, so later S5 variants can reuse the same samples.
+    uint32_t state = static_cast<uint32_t>(params::kRansacSeed) ^
+        (static_cast<uint32_t>(i + 1) * 0x9e3779b9u);
+    if (state == 0u) state = 0x6d2b79f5u;
+    int sample[4];
+    for (int slot = 0; slot < 4; ++slot) {
+        bool duplicate;
+        do {
+            sample[slot] = static_cast<int>(next_ransac_random(state) %
+                                            static_cast<uint32_t>(count));
+            duplicate = false;
+            for (int j = 0; j < slot; ++j)
+                duplicate = duplicate || sample[slot] == sample[j];
+        } while (duplicate);
+    }
+    valid[i] = cuda_homography::estimate(src, dst, sample, 4, models[i]) ? 1 : 0;
 }
-__global__ void score_serial(const Point* src, const Point* dst, int n, const Homography* models,
+__global__ void score_serial(const Point* src, const Point* dst, const int* nValid, const Homography* models,
                              const int* valid, Score* scores, int iterations) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= iterations) return;
     Score score{-1, DBL_MAX};
     if (valid[i]) {
         score = {0,0};
-        for (int j = 0; j < n; ++j) {
+        for (int j = 0; j < *nValid; ++j) {
             const double error = cuda_homography::squared_error(models[i],src[j],dst[j]);
             if (error <= threshold2) { ++score.count; score.error += error; }
         }
@@ -245,11 +293,12 @@ __global__ void score_serial(const Point* src, const Point* dst, int n, const Ho
     scores[i] = score;
 }
 // V3: one block per hypothesis, coalesced match reads and a tree reduction.
-__global__ void score_parallel(const Point* src, const Point* dst, int n, const Homography* models,
+__global__ void score_parallel(const Point* src, const Point* dst, const int* nValid, const Homography* models,
                                const int* valid, Score* scores) {
     __shared__ int counts[threads];
     __shared__ double errors[threads];
     const int i = blockIdx.x;
+    const int n = *nValid;
     int count = 0; double sum = 0;
     if (valid[i])
         for (int j = threadIdx.x; j < n; j += blockDim.x) {
@@ -264,9 +313,42 @@ __global__ void score_parallel(const Point* src, const Point* dst, int n, const 
     }
     if (threadIdx.x == 0) scores[i] = valid[i] ? Score{counts[0],errors[0]} : Score{-1,DBL_MAX};
 }
-__global__ void inliers_kernel(const Point* src, const Point* dst, int n, Homography h, uint8_t* out) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = cuda_homography::squared_error(h,src[i],dst[i]) <= threshold2 ? 1 : 0;
+
+__global__ void select_refine_count_kernel(
+    const Point* src, const Point* dst, const int* nValid,
+    const Homography* models, const int* model_valid, const Score* scores,
+    int* selected_inliers, Homography* output_h, int* output_inliers) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    const int n = *nValid;
+    for (int i = 0; i < 9; ++i) output_h->h[i] = 0.0;
+    *output_inliers = 0;
+    if (n < 4) return;
+
+    int best = -1;
+    for (int i = 0; i < params::kRansacIters; ++i) {
+        if (!model_valid[i] || scores[i].count < 4) continue;
+        if (best < 0 || scores[i].count > scores[best].count ||
+            (scores[i].count == scores[best].count && scores[i].error < scores[best].error))
+            best = i;
+    }
+    if (best < 0) return;
+
+    int selected_count = 0;
+    for (int i = 0; i < n; ++i)
+        if (cuda_homography::squared_error(models[best], src[i], dst[i]) <= threshold2)
+            selected_inliers[selected_count++] = i;
+    if (selected_count < 4) return;
+
+    Homography refined{};
+    if (!cuda_homography::estimate(src, dst, selected_inliers, selected_count, refined)) return;
+    int final_count = 0;
+    for (int i = 0; i < n; ++i)
+        if (cuda_homography::squared_error(refined, src[i], dst[i]) <= threshold2)
+            ++final_count;
+    if (final_count < 4) return;
+
+    *output_h = refined;
+    *output_inliers = final_count;
 }
 
 __device__ uint8_t rounded_byte(double value) {
@@ -339,11 +421,13 @@ struct Workspace {
     DeviceImage a, b;
     DeviceBuffer<Nearest> forward, reverse;
     DeviceBuffer<Match> raw_matches;
+    DeviceBuffer<Keypoint> s5_kp_a, s5_kp_b;
+    DeviceBuffer<Match> s5_matches;
     DeviceBuffer<Point> src, dst;
-    DeviceBuffer<int> samples, model_valid;
-    DeviceBuffer<Homography> models;
+    DeviceBuffer<int> n_s5_valid, model_valid, selected_inliers, n_s5_inliers;
+    DeviceBuffer<Homography> models, s5_output_h;
     DeviceBuffer<Score> scores;
-    DeviceBuffer<uint8_t> inlier_flags, panorama, coverage;
+    DeviceBuffer<uint8_t> panorama, coverage;
 };
 
 template<class Function>
@@ -478,68 +562,44 @@ bool ransac( int version, Workspace& ws, const std::vector<Keypoint>& ka,
              Homography& out, int& ninliers, StageTimes& t) {
     ninliers = 0;
     out = Homography{};
-    if (matches.size() < 4) return false;
-    auto start = Clock::now();
-    std::vector<Point> src, dst;
-    src.reserve(matches.size()); dst.reserve(matches.size());
-    for (const Match& m : matches) {
-        if (m.idxA < 0 || m.idxB < 0 || m.idxA >= static_cast<int>(ka.size()) || m.idxB >= static_cast<int>(kb.size())) continue;
-        if (!std::isfinite(ka[m.idxA].x) || !std::isfinite(ka[m.idxA].y) ||
-            !std::isfinite(kb[m.idxB].x) || !std::isfinite(kb[m.idxB].y)) continue;
-        src.push_back({kb[m.idxB].x,kb[m.idxB].y}); dst.push_back({ka[m.idxA].x,ka[m.idxA].y});
-    }
-    if (src.size() < 4) { t.ransac += elapsed(start); return false; }
-    const int n = static_cast<int>(src.size()), iterations = params::kRansacIters;
-    std::vector<int> samples(static_cast<std::size_t>(iterations)*4);
-    std::mt19937 rng(params::kRansacSeed);
-    std::uniform_int_distribution<int> pick(0,n-1);
-    for (int i = 0; i < iterations; ++i) {
-        int count = 0;
-        while (count < 4) {
-            const int candidate = pick(rng);
-            bool duplicate = false;
-            for (int j = 0; j < count; ++j) duplicate = duplicate || samples[4*i+j] == candidate;
-            if (!duplicate) samples[4*i+count++] = candidate;
-        }
-    }
-    t.ransac += elapsed(start);
-    ws.src.reserve(n); ws.dst.reserve(n); ws.samples.reserve(samples.size());
-    ws.models.reserve(iterations); ws.model_valid.reserve(iterations); ws.scores.reserve(iterations); ws.inlier_flags.reserve(n);
-    upload(ws,t,ws.src.get(),src.data(),src.size()); upload(ws,t,ws.dst.get(),dst.data(),dst.size());
-    upload(ws,t,ws.samples.get(),samples.data(),samples.size());
+    if (matches.size() < 4 || ka.empty() || kb.empty() ||
+        matches.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        ka.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        kb.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
+    const int n_matches = static_cast<int>(matches.size());
+    const int iterations = params::kRansacIters;
+    ws.s5_kp_a.reserve(ka.size()); ws.s5_kp_b.reserve(kb.size());
+    ws.s5_matches.reserve(matches.size());
+    ws.src.reserve(matches.size()); ws.dst.reserve(matches.size());
+    ws.n_s5_valid.reserve(1); ws.selected_inliers.reserve(matches.size());
+    ws.models.reserve(iterations); ws.model_valid.reserve(iterations); ws.scores.reserve(iterations);
+    ws.s5_output_h.reserve(1); ws.n_s5_inliers.reserve(1);
+    upload(ws,t,ws.s5_kp_a.get(),ka.data(),ka.size());
+    upload(ws,t,ws.s5_kp_b.get(),kb.data(),kb.size());
+    upload(ws,t,ws.s5_matches.get(),matches.data(),matches.size());
     kernels(ws,t,t.ransac,[&]() {
-        hypotheses_kernel<<<blocks(iterations),threads>>>(ws.src.get(),ws.dst.get(),ws.samples.get(),ws.models.get(),ws.model_valid.get(),iterations);
-        if (version == 3) score_parallel<<<iterations,threads>>>(ws.src.get(),ws.dst.get(),n,ws.models.get(),ws.model_valid.get(),ws.scores.get());
-        else score_serial<<<blocks(iterations),threads>>>(ws.src.get(),ws.dst.get(),n,ws.models.get(),ws.model_valid.get(),ws.scores.get(),iterations);
+        prepare_correspondences_kernel<<<1,1>>>(
+            ws.s5_kp_a.get(),static_cast<int>(ka.size()),ws.s5_kp_b.get(),static_cast<int>(kb.size()),
+            ws.s5_matches.get(),n_matches,ws.src.get(),ws.dst.get(),ws.n_s5_valid.get());
+        CUDA_CHECK(cudaGetLastError());
+        hypotheses_kernel<<<blocks(iterations),threads>>>(
+            ws.src.get(),ws.dst.get(),ws.n_s5_valid.get(),ws.models.get(),ws.model_valid.get(),iterations);
+        CUDA_CHECK(cudaGetLastError());
+        if (version == 3)
+            score_parallel<<<iterations,threads>>>(ws.src.get(),ws.dst.get(),ws.n_s5_valid.get(),
+                                                   ws.models.get(),ws.model_valid.get(),ws.scores.get());
+        else
+            score_serial<<<blocks(iterations),threads>>>(ws.src.get(),ws.dst.get(),ws.n_s5_valid.get(),
+                                                         ws.models.get(),ws.model_valid.get(),ws.scores.get(),iterations);
+        CUDA_CHECK(cudaGetLastError());
+        select_refine_count_kernel<<<1,1>>>(
+            ws.src.get(),ws.dst.get(),ws.n_s5_valid.get(),ws.models.get(),ws.model_valid.get(),ws.scores.get(),
+            ws.selected_inliers.get(),ws.s5_output_h.get(),ws.n_s5_inliers.get());
     });
-    std::vector<Score> scores(static_cast<std::size_t>(iterations));
-    download(ws,t,scores.data(),ws.scores.get(),scores.size());
-    start = Clock::now();
-    int best = -1;
-    for (int i = 0; i < iterations; ++i)
-        if (scores[i].count >= 4 && (best < 0 || scores[i].count > scores[best].count ||
-            (scores[i].count == scores[best].count && scores[i].error < scores[best].error))) best = i;
-    t.ransac += elapsed(start);
-    if (best < 0) return false;
-    Homography model{}; download(ws,t,&model,ws.models.get()+best,1);
-    kernels(ws,t,t.ransac,[&]() { inliers_kernel<<<blocks(n),threads>>>(ws.src.get(),ws.dst.get(),n,model,ws.inlier_flags.get()); });
-    std::vector<uint8_t> flags(static_cast<std::size_t>(n));
-    download(ws,t,flags.data(),ws.inlier_flags.get(),flags.size());
-    start = Clock::now();
-    std::vector<int> selected;
-    for (int i = 0; i < n; ++i) if (flags[i]) selected.push_back(i);
-    const bool ok = cuda_homography::estimate(src.data(),dst.data(),selected.data(),static_cast<int>(selected.size()),out);
-    t.ransac += elapsed(start);
-    if (ok) {
-        // The reported count belongs to the final refined transform, not the
-        // four-point seed. This mirrors the corrected V0 contract.
-        kernels(ws,t,t.ransac,[&]() { inliers_kernel<<<blocks(n),threads>>>(ws.src.get(),ws.dst.get(),n,out,ws.inlier_flags.get()); });
-        download(ws,t,flags.data(),ws.inlier_flags.get(),flags.size());
-        start = Clock::now();
-        ninliers = static_cast<int>(std::count(flags.begin(),flags.end(),uint8_t{1}));
-        t.ransac += elapsed(start);
-    }
-    return ok && ninliers >= 4;
+    download(ws,t,&out,ws.s5_output_h.get(),1);
+    download(ws,t,&ninliers,ws.n_s5_inliers.get(),1);
+    if (ninliers < 4) { out = Homography{}; ninliers = 0; return false; }
+    return true;
 }
 
 struct Canvas { int minx, miny, w, h; Homography inv; };

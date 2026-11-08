@@ -2,8 +2,8 @@
 #pragma once
 #include "../core_headers/common.h"
 
-// Real CUDA pipelines: the host retains deterministic top-K selection,
-// hypothesis sampling, final least-squares refinement and valid-mask cropping.
+// Real CUDA pipelines: the host retains deterministic top-K selection and
+// valid-mask cropping. RANSAC sampling, scoring and refinement run on device.
 // All failures reset the panorama and return false; diagnostics go to stderr.
 bool run_v1(const Image& A, const Image& B, PipelineResult& out);
 bool run_v2(const Image& A, const Image& B, PipelineResult& out);
