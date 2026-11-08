@@ -1,9 +1,9 @@
 // File: v1_stage6.cu
 // Authors: Tran Kim Ngan
-// Description: Pure CUDA inverse bilinear warp, feather blend, and GPU-side valid crop.
-//              100% of calculations (warping, masking, histogram scan, cropping) run on GPU.
+// Description: Ghép ảnh bằng inverse warp, nội suy song tuyến tính và feather blending.
+//              CPU chuẩn bị phép biến đổi/canvas; GPU warp, tạo mask, tìm vùng crop và cắt ảnh.
 // External sources: none
-#include "../core_headers/common.h"
+#include "../core_headers/v1_stages.h"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cfloat>
@@ -21,17 +21,19 @@ constexpr size_t kMaxCanvasPixels = size_t{64} * 1024 * 1024;
 constexpr double kRoundoffFactor = 64.0 * DBL_EPSILON;
 
 #ifndef CUDA_CHECK
+// Ghi mã lỗi CUDA và vị trí gọi ra stderr; macro này không dừng hay ném ngoại lệ.
 #define CUDA_CHECK(call)                                                       \
-    do {                                                                       \
+    do {                                                                      \
         cudaError_t err = (call);                                              \
         if (err != cudaSuccess) {                                              \
             std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__       \
                       << " code=" << err << " \"" << cudaGetErrorString(err)   \
-                      << "\"\n";                                               \
-        }                                                                      \
+                      << "\"\n";                                             \
+        }                                                                     \
     } while (0)
 #endif
 
+// Vùng crop trên canvas: góc trên trái (x, y), chiều rộng w và chiều cao h.
 struct GpuRect {
     int x = 0;
     int y = 0;
@@ -43,6 +45,9 @@ struct GpuRect {
 // 1. HOST PREPARATION HELPERS (O(1) Matrix & Bounding Box)
 // =========================================================================
 
+// CPU: chiếu điểm (x, y) qua homography h rồi chia cho tọa độ thuần nhất z.
+// Ghi kết quả vào out_x/out_y; trả false nếu z quá gần 0 hoặc kết quả không hữu hạn.
+// Dùng để chiếu bốn góc ảnh B sang hệ tọa độ ảnh A khi tính kích thước canvas.
 bool project_host(const double h[9], double x, double y, double& out_x, double& out_y) {
     const double z = h[6] * x + h[7] * y + h[8];
     const double scale = std::abs(h[6] * x) + std::abs(h[7] * y) + std::abs(h[8]);
@@ -52,12 +57,16 @@ bool project_host(const double h[9], double x, double y, double& out_x, double& 
     return std::isfinite(out_x) && std::isfinite(out_y);
 }
 
+// CPU: đưa giá trị rất gần số nguyên về đúng số nguyên đó để khử sai số số thực.
+// Tránh floor/ceil làm canvas rộng hoặc cao thêm một pixel ngoài dự kiến.
 double snap_integer(double value) {
     const double nearest = std::round(value);
     return std::abs(value - nearest) <= 1e-8 + kRoundoffFactor * std::abs(value)
         ? nearest : value;
 }
 
+// CPU: kiểm tra H hữu hạn, chuẩn hóa theo hệ số có trị tuyệt đối lớn nhất,
+// rồi tạo h (B -> A) và inverse (A -> B) cho phép chiếu ngược.
 bool prepare_transform(const Homography& H, double h[9], double inverse[9]) {
     double scale = 0.0;
     for (double value : H.h) {
@@ -91,6 +100,7 @@ bool prepare_transform(const Homography& H, double h[9], double inverse[9]) {
 // 2. DEVICE KERNELS (WARP, FEATHER BLEND, HISTOGRAM SCAN, CROP)
 // =========================================================================
 
+// GPU: phiên bản chiếu điểm tương tự project_host, dùng trong kernel warp.
 __device__ inline bool project_device(const double h[9], double x, double y, double& out_x, double& out_y) {
     const double z = h[6] * x + h[7] * y + h[8];
     const double scale = fabs(h[6] * x) + fabs(h[7] * y) + fabs(h[8]);
@@ -100,12 +110,13 @@ __device__ inline bool project_device(const double h[9], double x, double y, dou
     return isfinite(out_x) && isfinite(out_y);
 }
 
+// GPU: kẹp một kênh màu vào [0, 255], làm tròn tới số nguyên gần nhất
 __device__ inline uint8_t rounded_channel_device(double value) {
     value = fmax(0.0, fmin(255.0, value));
     return static_cast<uint8_t>(floor(value + 0.5));
 }
 
-// KERNEL 1: Inverse Warping + Bilinear Sampling + Feather Blending
+// KERNEL 1: mỗi thread tính một pixel trên canvas panorama.
 __global__ void warp_blend_kernel(
     const uint8_t* __restrict__ A, int Aw, int Ah,
     const uint8_t* __restrict__ B, int Bw, int Bh,
@@ -184,7 +195,7 @@ __global__ void warp_blend_kernel(
     valid[pixel] = (in_A || in_B) ? 1 : 0;
 }
 
-// KERNEL 2: Tìm hình chữ nhật hợp lệ lớn nhất trên GPU (Histogram Monotonic Stack)
+// KERNEL 2: tìm hình chữ nhật có diện tích lớn nhất chỉ chứa pixel valid = 1.
 __global__ void find_crop_rect_kernel(
     const uint8_t* __restrict__ valid,
     int width, int height,
@@ -241,7 +252,7 @@ __global__ void find_crop_rect_kernel(
     }
 }
 
-// KERNEL 3: Song song hoá việc cắt ảnh (Crop) ngay trên Device
+// KERNEL 3: mỗi thread sao chép ba kênh RGB của một pixel trong vùng crop.
 __global__ void crop_image_kernel(
     const uint8_t* __restrict__ src, int src_w, int src_h,
     uint8_t* __restrict__ dst, int dst_w, int dst_h,
@@ -263,10 +274,18 @@ __global__ void crop_image_kernel(
 }  // namespace
 
 // =========================================================================
-// 3. HÀM INTERFACE CHÍNH: v1_warp_blend (100% PURE GPU PIPELINE)
+// 3. HÀM CHÍNH: v1_warp_blend (CPU ĐIỀU PHỐI, GPU XỬ LÝ ẢNH)
 // =========================================================================
 
+// Ghép hai ảnh RGB A, B thành pano; H ánh xạ tọa độ B sang tọa độ A.
+// CPU kiểm tra đầu vào, chuẩn bị ma trận và canvas bao cả A lẫn B sau biến đổi.
+// Sau khi chép ảnh lên GPU, lần lượt chạy warp/blend, tìm hình chữ nhật hợp lệ
+// lớn nhất và crop. CPU đọc thông tin vùng crop để cấp phát ảnh kết quả,
+// rồi nhận ảnh đã cắt về pano và giải phóng các buffer GPU.
+// Đầu vào/phép biến đổi/canvas không hợp lệ hoặc không có vùng crop: pano rỗng.
+// Lỗi CUDA được macro CUDA_CHECK ghi ra stderr, không tự hủy luồng xử lý.
 void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& pano) {
+    // Đưa đầu ra về ảnh rỗng khi một bước kiểm tra không đạt.
     auto fail = [&]() { pano = Image{}; };
     if (!valid_rgb_image(A) || !valid_rgb_image(B)) { fail(); return; }
 
@@ -359,7 +378,7 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     );
     CUDA_CHECK(cudaGetLastError());
 
-    // Đọc toạ độ crop (chỉ đúng 4 số nguyên int, siêu nhẹ) về Host
+    // Đọc toạ độ crop về Host
     GpuRect crop;
     CUDA_CHECK(cudaMemcpy(&crop, d_crop_rect, sizeof(GpuRect), cudaMemcpyDeviceToHost));
 
@@ -392,7 +411,7 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // 7. Truyền kết quả Device -> Host (D2H): CHỈ truyền ảnh đã crop!
+    // 7. Truyền kết quả Device -> Host (D2H)
     pano.w = crop.w;
     pano.h = crop.h;
     pano.c = 3;

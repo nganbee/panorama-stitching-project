@@ -1,5 +1,5 @@
 // Baseline CUDA S3/S4: global memory, one thread per keypoint/query.
-#include "../core_headers/v1_stage34.h"
+#include "../core_headers/v1_stages.h"
 #include <cuda_runtime.h>
 #include <climits>
 #include <stdexcept>
