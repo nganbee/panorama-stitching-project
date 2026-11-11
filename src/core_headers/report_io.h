@@ -38,7 +38,7 @@ inline void write_parameters_json(std::ostream& o) {
       << ",\"kRansacSeed\":" << params::kRansacSeed
       << ",\"available_versions\":[0";
 #ifdef PANORAMA_WITH_CUDA
-    o << ",1,2,3";
+    o << ",1";
 #endif
     o << "]}\n";
 }

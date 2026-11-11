@@ -20,8 +20,6 @@ inline PipelineFn get_version(int v) {
         case 0: return run_v0;
 #ifdef PANORAMA_WITH_CUDA
         case 1: return run_v1;
-        case 2: return run_v2;
-        case 3: return run_v3;
 #endif
         default: return nullptr;
     }

@@ -148,16 +148,48 @@ Timing harness thực hiện một warm-up và trung bình ít nhất năm lần
   dataset/location1/small_720p/2.jpg
 ```
 
-### Trạng thái V1 hiện tại
+### Build và chạy full V1 pipeline
 
-Trên branch `v1`, các thành phần CUDA đã có self-test độc lập cho S1–S2,
-S3–S4 và S6. Full pipeline `--version 1` chưa được bật trên branch này vì
-phần `src/cuda/cuda_pipeline.*` chưa được merge vào `v1`. Do đó, trước mắt
-hãy dùng V0 để tạo baseline và chạy các parity test CUDA theo từng stage.
+Milestone 2 kết nối S1–S4 và S6 CUDA với S5 CPU V0. Stage timings của V1 là
+wall-clock time của từng synchronous host-buffer wrapper, nên vẫn bao gồm
+allocation và H2D/D2H của stage tương ứng. Đây là baseline correctness; V2 sẽ
+giữ buffer trên device và tách kernel/transfer timing.
 
-Toàn bộ quy trình Colab ở trên đã được đóng gói trong notebook
-`test_v1.ipynb`. Có thể mở notebook này trực tiếp trên Google Colab hoặc
-upload file lên Colab rồi chạy các cell theo thứ tự.
+```python
+!nvcc -O2 -std=c++17 -DPANORAMA_WITH_CUDA \
+  -Isrc/core_headers -Isrc/libraries \
+  src/integration/main.cpp \
+  src/integration/v0_pipeline.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v0_stage5.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  src/stage_implementations/v1_stage34.cu \
+  src/stage_implementations/v1_stage6.cu \
+  src/cuda/cuda_pipeline.cu \
+  src/libraries/stb_impl.cpp \
+  -o build/stitch_cuda
+```
+
+```python
+!build/stitch_cuda \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg \
+  out/panorama_v1_location1_720p.png \
+  --version 1 --runs 5 \
+  --json reports/v1_location1_720p.json
+```
+
+Self-test smoke của pipeline CUDA:
+
+```python
+!build/stitch_cuda --selftest --version 1
+```
+
+Toàn bộ quy trình Colab được đóng gói trong notebook `test_v1.ipynb`. Sau khi
+full V1 được build, chạy thêm cell build/run V1 trong notebook để so sánh với
+output V0 cùng dataset.
 
 ## V1 CUDA S1-S4 (basic stage baselines)
 
@@ -189,19 +221,19 @@ keypoint count/order on deterministic random and constant images.
 
 The independent GPU implementation lives in
 `src/stage_implementations/v1_stage34.cu`, with interfaces in
-`src/core_headers/v1_stage34.h`. Call `v1_describe` for each blurred image
+`src/core_headers/v1_stages.h`. Call `v1_describe` for each blurred image
 and its keypoints, then `v1_match` on the two descriptor vectors. The host
 wrappers allocate buffers, copy data, and launch kernels. BRIEF pattern
 generation, descriptor calculation, nearest-neighbour searches, ratio test,
 mutual cross-check, and ordered match compaction all run on the GPU.
 CUDA errors throw exceptions; there is no CPU fallback.
 
-This is only the S3-S4 contribution, not a complete `--version 1` pipeline.
-Keep V0 as the CPU reference. S1-S2 and S5-S6 must have their own GPU
-implementations before enabling the CUDA pipeline registry. Intermediate
-host buffers are supported by these interfaces. Calls are synchronous;
-wall-clock measurements include allocation and transfers, not just kernels.
-Compaction deliberately uses one GPU thread for this simple baseline.
+The S3-S4 wrappers are synchronous host-buffer interfaces. They are now
+connected to the full V1 pipeline through `src/cuda/cuda_pipeline.cu`; S5
+still uses the V0 CPU RANSAC implementation in this milestone, while S6 uses
+its CUDA implementation. Wall-clock stage measurements include allocation and
+host/device transfers, not just kernels. Compaction deliberately uses one GPU
+thread for this simple baseline.
 
 Build and run the parity test on a machine with the CUDA toolkit and GPU
 (the CPU functions here are used only as a test oracle):

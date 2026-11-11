@@ -184,7 +184,7 @@ void print_usage(const char* program) {
         "Usage: %s <left_image> <right_image> <output_image> "
         "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
         "       %s --dump-params | --list-versions | --help\n"
-        "       %s --selftest --version N (CUDA build, N=1..3)\n", program, program, program);
+        "       %s --selftest --version N (CUDA build, N=1)\n", program, program, program);
 }
 
 bool parse_int(const char* value, int& out) {
@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::strcmp(argv[1], "--selftest") == 0 &&
         std::strcmp(argv[2], "--version") == 0) {
         int version = -1;
-        if (!parse_int(argv[3], version) || version < 1 || version > 3) return 2;
+        if (!parse_int(argv[3], version) || version != 1) return 2;
 #ifdef PANORAMA_WITH_CUDA
         return cuda_selftest(version) ? 0 : 1;
 #else
