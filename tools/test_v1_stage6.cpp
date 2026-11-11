@@ -106,6 +106,19 @@ int main() {
     invalid.h[0] = 0.0; invalid.h[4] = 0.0; // Singular
     compare_v0_v1(A, B, invalid, "8. Rejection of singular homography");
 
+    // Cover multiple histogram/row blocks and >256 reduction candidates.
+    Image large = solid(257, 263, 0);
+    for (size_t i = 0; i < large.data.size(); ++i) {
+        large.data[i] = static_cast<uint8_t>((i * 73 + i / 17) % 256);
+    }
+    compare_v0_v1(large, large, translation(), "9. Multiple blocks and reduction groups");
+    compare_v0_v1(large, large, translation(63.5, -7.25), "10. Large fractional translation");
+    compare_v0_v1(large, large, perspective, "11. Large perspective crop");
+    compare_v0_v1(solid(1, 513, 80), solid(1, 513, 200), translation(), "12. Single column");
+    compare_v0_v1(solid(513, 1, 80), solid(513, 1, 200), translation(), "13. Single row");
+    compare_v0_v1(A, B, translation(50, 0), "14. Equal-area crops prefer leftmost");
+    compare_v0_v1(A, B, translation(0, 50), "15. Equal-area crops prefer earliest row");
+
     std::cout << "\nResult: " << (failures == 0 ? "ALL PASS" : "FAILURES DETECTED")
               << " (" << failures << " failures)\n";
     return failures == 0 ? 0 : 1;

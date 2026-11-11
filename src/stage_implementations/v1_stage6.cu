@@ -4,6 +4,7 @@
 //              CPU chuẩn bị phép biến đổi/canvas; GPU warp, tạo mask, tìm vùng crop và cắt ảnh.
 // External sources: none
 #include "../core_headers/v1_stages.h"
+#include "../core_headers/stage6_crop.h"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cfloat>
@@ -34,12 +35,7 @@ constexpr double kRoundoffFactor = 64.0 * DBL_EPSILON;
 #endif
 
 // Vùng crop trên canvas: góc trên trái (x, y), chiều rộng w và chiều cao h.
-struct GpuRect {
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
-};
+using GpuRect = stage6_crop::Rect;
 
 // =========================================================================
 // 1. HOST PREPARATION HELPERS (O(1) Matrix & Bounding Box)
@@ -195,61 +191,55 @@ __global__ void warp_blend_kernel(
     valid[pixel] = (in_A || in_B) ? 1 : 0;
 }
 
-// KERNEL 2: tìm hình chữ nhật có diện tích lớn nhất chỉ chứa pixel valid = 1.
-__global__ void find_crop_rect_kernel(
-    const uint8_t* __restrict__ valid,
-    int width, int height,
-    int* __restrict__ heights,
-    int* __restrict__ stack,
+// Crop phase 1: independent columns build all row histograms. Adjacent
+// threads read/write adjacent columns; there is no cross-column dependency.
+__global__ void build_crop_histograms_kernel(
+    const uint8_t* __restrict__ valid, int width, int height,
+    int* __restrict__ heights)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    int count = 0;
+    for (int y = 0; y < height; ++y) {
+        const size_t pixel = static_cast<size_t>(y) * width + x;
+        count = valid[pixel] ? count + 1 : 0;
+        heights[pixel] = count;
+    }
+}
+
+// Crop phase 2: a separate thread scans each row, with its own stack.
+// All rows run independently instead of one thread scanning the whole image.
+__global__ void find_crop_rows_kernel(
+    const int* __restrict__ heights, int width, int height,
+    int* __restrict__ stacks, GpuRect* __restrict__ rows)
+{
+    const int y = blockIdx.x * blockDim.x + threadIdx.x;
+    if (y >= height) return;
+    const size_t offset = static_cast<size_t>(y) * width;
+    rows[y] = stage6_crop::scan_row(heights + offset, width, y, stacks + offset);
+}
+
+// Crop phase 3: reduce the row winners with V0's deterministic tie order.
+constexpr int kCropReduceThreads = 256;
+__global__ void reduce_crop_rows_kernel(
+    const GpuRect* __restrict__ rows, int height,
     GpuRect* __restrict__ out_rect)
 {
-    // Chạy trên GPU: khởi tạo mảng heights ban đầu
-    for (int x = threadIdx.x; x < width; x += blockDim.x) {
-        heights[x] = 0;
+    __shared__ GpuRect candidates[kCropReduceThreads];
+    GpuRect best{};
+    for (int y = threadIdx.x; y < height; y += blockDim.x) {
+        if (stage6_crop::better(rows[y], best)) best = rows[y];
     }
+    candidates[threadIdx.x] = best;
     __syncthreads();
-
-    // Duyệt qua từng dòng của canvas
-    GpuRect best = {0, 0, 0, 0};
-
-    for (int y = 0; y < height; ++y) {
-        const size_t row_offset = static_cast<size_t>(y) * width;
-        // Cập nhật chiều cao song song bằng tất cả thread trong block
-        for (int x = threadIdx.x; x < width; x += blockDim.x) {
-            heights[x] = valid[row_offset + x] ? (heights[x] + 1) : 0;
-        }
-        __syncthreads();
-
-        // Quét monotonic stack cho dòng y (thread 0 thực thi)
-        if (threadIdx.x == 0) {
-            int stack_size = 0;
-            for (int x = 0; x <= width; ++x) {
-                const int current = (x < width) ? heights[x] : 0;
-                while (stack_size > 0 && current < heights[stack[stack_size - 1]]) {
-                    const int bar = stack[--stack_size];
-                    const int left = (stack_size == 0) ? 0 : (stack[stack_size - 1] + 1);
-                    const int rect_w = x - left;
-                    const int rect_h = heights[bar];
-                    const long long area = static_cast<long long>(rect_w) * rect_h;
-                    const long long best_area = static_cast<long long>(best.w) * best.h;
-                    if (area > best_area || (area == best_area && rect_w > best.w)) {
-                        best.x = left;
-                        best.y = y - rect_h + 1;
-                        best.w = rect_w;
-                        best.h = rect_h;
-                    }
-                }
-                if (x < width) {
-                    stack[stack_size++] = x;
-                }
-            }
+    for (int stride = kCropReduceThreads / 2; stride > 0; stride /= 2) {
+        if (threadIdx.x < stride &&
+            stage6_crop::better(candidates[threadIdx.x + stride], candidates[threadIdx.x])) {
+            candidates[threadIdx.x] = candidates[threadIdx.x + stride];
         }
         __syncthreads();
     }
-
-    if (threadIdx.x == 0) {
-        *out_rect = best;
-    }
+    if (threadIdx.x == 0) *out_rect = candidates[0];
 }
 
 // KERNEL 3: mỗi thread sao chép ba kênh RGB của một pixel trong vùng crop.
@@ -332,8 +322,7 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
 
     // 2. Cấp phát bộ nhớ Device (GPU)
     uint8_t *d_A = nullptr, *d_B = nullptr, *d_pano = nullptr, *d_valid = nullptr;
-    int *d_heights = nullptr, *d_stack = nullptr;
-    GpuRect *d_crop_rect = nullptr;
+    int* d_crop_workspace = nullptr;
 
     const size_t bytes_A = static_cast<size_t>(A.w) * A.h * 3;
     const size_t bytes_B = static_cast<size_t>(B.w) * B.h * 3;
@@ -344,9 +333,15 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     CUDA_CHECK(cudaMalloc(&d_B, bytes_B));
     CUDA_CHECK(cudaMalloc(&d_pano, bytes_pano));
     CUDA_CHECK(cudaMalloc(&d_valid, bytes_valid));
-    CUDA_CHECK(cudaMalloc(&d_heights, static_cast<size_t>(pano_w) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_stack, (static_cast<size_t>(pano_w) + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_crop_rect, sizeof(GpuRect)));
+
+    // Lưu trữ histogram
+    const size_t workspace_bytes = 2 * pixels * sizeof(int) +
+        (static_cast<size_t>(pano_h) + 1) * sizeof(GpuRect);
+    CUDA_CHECK(cudaMalloc(&d_crop_workspace, workspace_bytes));
+    int* d_heights = d_crop_workspace;
+    int* d_stacks = d_crop_workspace + pixels;
+    GpuRect* d_crop_rows = reinterpret_cast<GpuRect*>(d_crop_workspace + 2 * pixels);
+    GpuRect* d_crop_rect = d_crop_rows + pano_h;
 
     // 3. Truyền dữ liệu Host -> Device (H2D)
     CUDA_CHECK(cudaMemcpy(d_A, A.data.data(), bytes_A, cudaMemcpyHostToDevice));
@@ -370,12 +365,14 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     CUDA_CHECK(cudaGetLastError());
 
     // 5. KERNEL 2: Quét biểu đồ histogram tìm Largest Valid Rectangle (Toàn bộ trên GPU)
-    find_crop_rect_kernel<<<1, 256>>>(
-        d_valid,
-        pano_w, pano_h,
-        d_heights, d_stack,
-        d_crop_rect
-    );
+    constexpr int crop_threads = 128;
+    build_crop_histograms_kernel<<<(pano_w + crop_threads - 1) / crop_threads, crop_threads>>>(
+        d_valid, pano_w, pano_h, d_heights);
+    CUDA_CHECK(cudaGetLastError());
+    find_crop_rows_kernel<<<(pano_h + crop_threads - 1) / crop_threads, crop_threads>>>(
+        d_heights, pano_w, pano_h, d_stacks, d_crop_rows);
+    CUDA_CHECK(cudaGetLastError());
+    reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(d_crop_rows, pano_h, d_crop_rect);
     CUDA_CHECK(cudaGetLastError());
 
     // Đọc toạ độ crop về Host
@@ -387,9 +384,7 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
         CUDA_CHECK(cudaFree(d_B));
         CUDA_CHECK(cudaFree(d_pano));
         CUDA_CHECK(cudaFree(d_valid));
-        CUDA_CHECK(cudaFree(d_heights));
-        CUDA_CHECK(cudaFree(d_stack));
-        CUDA_CHECK(cudaFree(d_crop_rect));
+        CUDA_CHECK(cudaFree(d_crop_workspace));
         fail();
         return;
     }
@@ -423,8 +418,6 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     CUDA_CHECK(cudaFree(d_B));
     CUDA_CHECK(cudaFree(d_pano));
     CUDA_CHECK(cudaFree(d_valid));
-    CUDA_CHECK(cudaFree(d_heights));
-    CUDA_CHECK(cudaFree(d_stack));
-    CUDA_CHECK(cudaFree(d_crop_rect));
+    CUDA_CHECK(cudaFree(d_crop_workspace));
     CUDA_CHECK(cudaFree(d_cropped_pano));
 }
