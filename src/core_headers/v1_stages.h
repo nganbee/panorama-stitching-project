@@ -5,6 +5,15 @@
 #pragma once
 #include "common.h"
 
+// S1-S2: blocking host-buffer interfaces for the basic CUDA implementation.
+// V1 intentionally keeps the wrappers simple: each call owns its device
+// buffers and synchronizes before returning. Later versions can introduce a
+// persistent device workspace without changing the numerical contract.
+void v1_rgb_to_gray(const Image& in, Gray& gray);
+void v1_gaussian_blur(const Gray& in, Gray& out);
+void v1_harris_response(const Gray& blurred, Gray& response);
+void v1_nms_topk(const Gray& response, std::vector<Keypoint>& keypoints);
+
 // S3-S4: Blocking host-buffer interfaces for the baseline global-memory CUDA stages.
 // Invalid S3 input returns an empty output, matching V0. CUDA failures throw
 // std::runtime_error; these functions never fall back to CPU computation.

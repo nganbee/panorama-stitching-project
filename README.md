@@ -1,5 +1,190 @@
 # Panorama stitching project
 
+## Chạy project trên Google Colab
+
+### 1. Bật GPU runtime
+
+Trong Colab chọn:
+
+```text
+Runtime -> Change runtime type -> Hardware accelerator -> T4 GPU
+```
+
+Sau đó kiểm tra GPU và CUDA:
+
+```python
+!nvidia-smi
+!nvcc --version
+```
+
+### 2. Clone repository và chuyển sang branch V1
+
+```python
+!git clone https://github.com/nganbee/panorama-stitching-project.git
+%cd panorama-stitching-project
+!git checkout v1
+!mkdir -p build out reports
+```
+
+Nếu repository đã được clone ở cell trước đó, chỉ cần chạy:
+
+```python
+%cd /content/panorama-stitching-project
+!git pull origin v1
+```
+
+### 3. Build và chạy V0 CPU reference
+
+V0 dùng để kiểm tra correctness và làm baseline thời gian cho V1:
+
+```python
+!g++ -O2 -std=c++17 \
+  -Isrc/core_headers -Isrc/libraries \
+  src/integration/main.cpp \
+  src/integration/v0_pipeline.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v0_stage5.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/libraries/stb_impl.cpp \
+  -o build/stitch
+```
+
+Chạy thử với cặp ảnh 720p:
+
+```python
+!build/stitch \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg \
+  out/panorama_v0_location1_720p.png \
+  --version 0 --runs 5 \
+  --json reports/v0_location1_720p.json
+```
+
+Hiển thị panorama trong Colab:
+
+```python
+from IPython.display import Image, display
+display(Image(filename="out/panorama_v0_location1_720p.png"))
+```
+
+### 4. Chạy self-test S1–S2 CUDA của V1
+
+Milestone 1 kiểm tra grayscale, Gaussian blur, Harris response, NMS và
+top-K của V1 so với V0:
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage12_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  -o build/stage12_cuda_selftest
+
+!build/stage12_cuda_selftest
+```
+
+Kiểm tra thêm lỗi memory access bằng Compute Sanitizer:
+
+```python
+!compute-sanitizer build/stage12_cuda_selftest
+```
+
+Kết quả thành công cần có:
+
+```text
+S1/S2 CUDA parity tests passed
+```
+
+### 5. Chạy self-test S3–S4 CUDA
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage34_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v1_stage34.cu \
+  -o build/stage34_cuda_selftest
+
+!build/stage34_cuda_selftest
+```
+
+Kết quả thành công cần có:
+
+```text
+S3/S4 CUDA parity tests passed
+```
+
+### 6. Chạy self-test S6 CUDA
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/test_v1_stage6.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/stage_implementations/v1_stage6.cu \
+  -o build/test_v1_stage6
+
+!build/test_v1_stage6
+```
+
+Kết quả thành công cần có dòng:
+
+```text
+Result: ALL PASS
+```
+
+### 7. Đo timing V0 của S1–S2
+
+Timing harness thực hiện một warm-up và trung bình ít nhất năm lần chạy ở
+720p, 1080p và 4K:
+
+```python
+!g++ -O2 -std=c++17 -Isrc/core_headers -Isrc/libraries \
+  tools/timing_stage12.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/libraries/stb_impl.cpp \
+  -o build/timing_stage12
+
+!build/timing_stage12 5 \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg
+```
+
+### Trạng thái V1 hiện tại
+
+Trên branch `v1`, các thành phần CUDA đã có self-test độc lập cho S1–S2,
+S3–S4 và S6. Full pipeline `--version 1` chưa được bật trên branch này vì
+phần `src/cuda/cuda_pipeline.*` chưa được merge vào `v1`. Do đó, trước mắt
+hãy dùng V0 để tạo baseline và chạy các parity test CUDA theo từng stage.
+
+Toàn bộ quy trình Colab ở trên đã được đóng gói trong notebook
+`test_v1.ipynb`. Có thể mở notebook này trực tiếp trên Google Colab hoặc
+upload file lên Colab rồi chạy các cell theo thứ tự.
+
+## V1 CUDA S1-S4 (basic stage baselines)
+
+The basic GPU implementation of S1-S2 lives in
+`src/stage_implementations/v1_stage12.cu`, with blocking host-buffer
+interfaces in `src/core_headers/v1_stages.h`. Grayscale, both Gaussian blur
+passes, Sobel/tensor construction, Harris response, and NMS run on the GPU.
+For this first V1 milestone, deterministic top-K selection remains on the
+host after the GPU NMS candidate list is copied back. Shared-memory tiling,
+kernel fusion, device-side top-K, and persistent workspaces are reserved for
+later versions.
+
+Build and run the S1-S2 parity test on a machine with the CUDA toolkit and GPU:
+
+```bash
+nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage12_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  -o stage12_cuda_selftest
+./stage12_cuda_selftest
+compute-sanitizer ./stage12_cuda_selftest
+```
+
+The test compares V1 against V0 for grayscale, blur, Harris response, and
+keypoint count/order on deterministic random and constant images.
+
 ## V1 CUDA S3-S4 (global-memory baseline)
 
 The independent GPU implementation lives in
