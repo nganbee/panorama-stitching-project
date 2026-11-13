@@ -5,10 +5,10 @@
 //
 // This version prioritizes a clear correctness baseline. Kernels use regular
 // global-memory accesses and one output pixel per thread. Shared-memory tiling,
-// kernel fusion, device-side top-K and persistent workspaces are reserved for
-// later versions.
+// kernel fusion and persistent workspaces are reserved for later versions.
 
 #include "../core_headers/v1_stages.h"
+#include "../core_headers/cuda_utils.cuh"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <climits>
@@ -73,10 +73,9 @@ __global__ void rgb_to_gray_kernel(const uint8_t* rgb, float* gray, int count) {
     gray[i] = 0.299f * rgb[base] + 0.587f * rgb[base + 1] + 0.114f * rgb[base + 2];
 }
 
-__constant__ float gaussian_weights[2 * params::kGaussRadius + 1];
-
 template <bool horizontal>
-__global__ void gaussian_blur_kernel(const float* input, float* output, int width, int height) {
+__global__ void gaussian_blur_kernel(const float* input, float* output, int width, int height,
+                                     const float* gaussian_weights) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
@@ -187,18 +186,44 @@ __global__ void nms_kernel(const float* response, const float* maximum,
     candidates[slot] = {static_cast<float>(x), static_cast<float>(y), value};
 }
 
-void upload_gaussian_weights() {
-    float weights[2 * params::kGaussRadius + 1];
+__global__ void gaussian_weights_kernel(float* weights) {
+    if (blockIdx.x || threadIdx.x) return;
     float sum = 0.0f;
     for (int i = -params::kGaussRadius; i <= params::kGaussRadius; ++i) {
         weights[i + params::kGaussRadius] =
-            std::exp(-static_cast<float>(i * i) /
+            expf(-static_cast<float>(i * i) /
                      (2.0f * params::kGaussSigma * params::kGaussSigma));
         sum += weights[i + params::kGaussRadius];
     }
-    for (float& weight : weights) weight /= sum;
-    check(cudaMemcpyToSymbol(gaussian_weights, weights, sizeof(weights)),
-          "cudaMemcpyToSymbol(gaussian_weights)");
+    for (int i = 0; i < 2 * params::kGaussRadius + 1; ++i) weights[i] /= sum;
+}
+
+__device__ bool better_keypoint(const Keypoint& a, const Keypoint& b) {
+    if (a.score != b.score) return a.score > b.score;
+    if (a.y != b.y) return a.y < b.y;
+    return a.x < b.x;
+}
+
+// Global-memory merge sort: each candidate independently finds its rank in
+// the other sorted run. One thread per candidate, no host sorting/selection.
+__global__ void merge_candidates_kernel(const Keypoint* input, Keypoint* output,
+                                         size_t n, size_t width) {
+    const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const size_t base = (i / (2 * width)) * (2 * width);
+    const size_t middle = base + width < n ? base + width : n;
+    const size_t end = base + 2 * width < n ? base + 2 * width : n;
+    const bool left = i < middle;
+    size_t lo = left ? middle : base;
+    size_t hi = left ? end : middle;
+    const size_t other_start = lo;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        const bool precedes = better_keypoint(input[mid], input[i]) ||
+            (!left && !better_keypoint(input[i], input[mid]));
+        if (precedes) lo = mid + 1; else hi = mid;
+    }
+    output[base + (i - (left ? base : middle)) + (lo - other_start)] = input[i];
 }
 
 dim3 pixel_block() { return dim3(16, 16); }
@@ -225,15 +250,15 @@ void v1_rgb_to_gray(const Image& in, Gray& gray) {
     DeviceBuffer<uint8_t> input(pixels * 3);
     DeviceBuffer<float> output(pixels);
 
-    check(cudaMemcpy(input.data, in.data.data(), pixels * 3 * sizeof(uint8_t),
+    check(v1_cuda::copy(input.data, in.data.data(), pixels * 3 * sizeof(uint8_t),
                      cudaMemcpyHostToDevice), "grayscale H2D");
-    rgb_to_gray_kernel<<<one_dimensional_blocks(count), kThreads>>>(input.data, output.data, count);
+    v1_cuda::launch([&] { rgb_to_gray_kernel<<<one_dimensional_blocks(count), kThreads>>>(input.data, output.data, count); });
     finish_kernel("grayscale kernel");
 
     gray.w = in.w;
     gray.h = in.h;
     gray.data.resize(pixels);
-    check(cudaMemcpy(gray.data.data(), output.data, pixels * sizeof(float),
+    check(v1_cuda::copy(gray.data.data(), output.data, pixels * sizeof(float),
                      cudaMemcpyDeviceToHost), "grayscale D2H");
 }
 
@@ -247,21 +272,23 @@ void v1_gaussian_blur(const Gray& in, Gray& out) {
     DeviceBuffer<float> temporary(pixels);
     DeviceBuffer<float> output(pixels);
 
-    check(cudaMemcpy(input.data, in.data.data(), pixels * sizeof(float),
+    check(v1_cuda::copy(input.data, in.data.data(), pixels * sizeof(float),
                      cudaMemcpyHostToDevice), "blur H2D");
-    upload_gaussian_weights();
+    DeviceBuffer<float> weights(2 * params::kGaussRadius + 1);
+    v1_cuda::launch([&] { gaussian_weights_kernel<<<1, 1>>>(weights.data); });
+    finish_kernel("Gaussian weights kernel");
 
     const dim3 block = pixel_block();
     const dim3 grid = pixel_grid(in.w, in.h);
-    gaussian_blur_kernel<true><<<grid, block>>>(input.data, temporary.data, in.w, in.h);
+    v1_cuda::launch([&] { gaussian_blur_kernel<true><<<grid, block>>>(input.data, temporary.data, in.w, in.h, weights.data); });
     finish_kernel("horizontal blur kernel");
-    gaussian_blur_kernel<false><<<grid, block>>>(temporary.data, output.data, in.w, in.h);
+    v1_cuda::launch([&] { gaussian_blur_kernel<false><<<grid, block>>>(temporary.data, output.data, in.w, in.h, weights.data); });
     finish_kernel("vertical blur kernel");
 
     out.w = in.w;
     out.h = in.h;
     out.data.resize(pixels);
-    check(cudaMemcpy(out.data.data(), output.data, pixels * sizeof(float),
+    check(v1_cuda::copy(out.data.data(), output.data, pixels * sizeof(float),
                      cudaMemcpyDeviceToHost), "blur D2H");
 }
 
@@ -274,21 +301,21 @@ void v1_harris_response(const Gray& blurred, Gray& response) {
     DeviceBuffer<float> input(pixels);
     DeviceBuffer<float> ixx(pixels), iyy(pixels), ixy(pixels), output(pixels);
 
-    check(cudaMemcpy(input.data, blurred.data.data(), pixels * sizeof(float),
+    check(v1_cuda::copy(input.data, blurred.data.data(), pixels * sizeof(float),
                      cudaMemcpyHostToDevice), "Harris H2D");
     const dim3 block = pixel_block();
     const dim3 grid = pixel_grid(blurred.w, blurred.h);
-    tensor_kernel<<<grid, block>>>(input.data, ixx.data, iyy.data, ixy.data,
-                                   blurred.w, blurred.h);
+    v1_cuda::launch([&] { tensor_kernel<<<grid, block>>>(input.data, ixx.data, iyy.data, ixy.data,
+                                   blurred.w, blurred.h); });
     finish_kernel("Sobel/tensor kernel");
-    harris_response_kernel<<<grid, block>>>(ixx.data, iyy.data, ixy.data, output.data,
-                                            blurred.w, blurred.h);
+    v1_cuda::launch([&] { harris_response_kernel<<<grid, block>>>(ixx.data, iyy.data, ixy.data, output.data,
+                                            blurred.w, blurred.h); });
     finish_kernel("Harris response kernel");
 
     response.w = blurred.w;
     response.h = blurred.h;
     response.data.resize(pixels);
-    check(cudaMemcpy(response.data.data(), output.data, pixels * sizeof(float),
+    check(v1_cuda::copy(response.data.data(), output.data, pixels * sizeof(float),
                      cudaMemcpyDeviceToHost), "Harris D2H");
 }
 
@@ -305,48 +332,39 @@ void v1_nms_topk(const Gray& response, std::vector<Keypoint>& keypoints) {
     DeviceBuffer<Keypoint> candidates(pixels);
     DeviceBuffer<int> candidate_count(1);
 
-    check(cudaMemcpy(input.data, response.data.data(), pixels * sizeof(float),
+    check(v1_cuda::copy(input.data, response.data.data(), pixels * sizeof(float),
                      cudaMemcpyHostToDevice), "NMS H2D");
-    check(cudaMemset(candidate_count.data, 0, sizeof(int)), "NMS count memset");
+    check(v1_cuda::clear(candidate_count.data, sizeof(int)), "NMS count memset");
 
-    max_response_kernel<<<partial_count, kThreads>>>(input.data, count, partial.data);
+    v1_cuda::launch([&] { max_response_kernel<<<partial_count, kThreads>>>(input.data, count, partial.data); });
     finish_kernel("first response reduction");
-    max_response_kernel<<<1, kThreads>>>(partial.data, partial_count, maximum.data);
+    v1_cuda::launch([&] { max_response_kernel<<<1, kThreads>>>(partial.data, partial_count, maximum.data); });
     finish_kernel("second response reduction");
 
     const dim3 block = pixel_block();
     const dim3 grid = pixel_grid(response.w, response.h);
-    nms_kernel<<<grid, block>>>(input.data, maximum.data, candidates.data,
-                                candidate_count.data, response.w, response.h);
+    v1_cuda::launch([&] { nms_kernel<<<grid, block>>>(input.data, maximum.data, candidates.data,
+                                candidate_count.data, response.w, response.h); });
     finish_kernel("NMS kernel");
 
     int count_candidates = 0;
-    check(cudaMemcpy(&count_candidates, candidate_count.data, sizeof(int),
+    check(v1_cuda::copy(&count_candidates, candidate_count.data, sizeof(int),
                      cudaMemcpyDeviceToHost), "NMS count D2H");
     if (count_candidates < 0 || count_candidates > count)
         throw std::runtime_error("CUDA S1/S2: invalid NMS candidate count");
 
-    std::vector<Keypoint> host_candidates(static_cast<std::size_t>(count_candidates));
-    if (count_candidates != 0) {
-        check(cudaMemcpy(host_candidates.data(), candidates.data,
-                         host_candidates.size() * sizeof(Keypoint),
-                         cudaMemcpyDeviceToHost), "NMS candidates D2H");
+    if (!count_candidates) return;
+    DeviceBuffer<Keypoint> scratch(static_cast<size_t>(count_candidates));
+    Keypoint* source = candidates.data;
+    Keypoint* target = scratch.data;
+    for (size_t width = 1; width < static_cast<size_t>(count_candidates); width *= 2) {
+        v1_cuda::launch([&] { merge_candidates_kernel<<<one_dimensional_blocks(count_candidates), kThreads>>>(
+            source, target, count_candidates, width); });
+        finish_kernel("GPU keypoint merge sort");
+        std::swap(source, target); // swap buffer handles only; no CPU keypoint computation
     }
-
-    // V1 keeps deterministic top-K selection on the host. Later versions can
-    // replace this with a device-side select/sort without changing the result.
-    auto better = [](const Keypoint& a, const Keypoint& b) {
-        if (a.score != b.score) return a.score > b.score;
-        if (a.y != b.y) return a.y < b.y;
-        return a.x < b.x;
-    };
-    if (count_candidates > params::kTopK) {
-        std::partial_sort(host_candidates.begin(),
-                          host_candidates.begin() + params::kTopK,
-                          host_candidates.end(), better);
-        host_candidates.resize(params::kTopK);
-    } else {
-        std::sort(host_candidates.begin(), host_candidates.end(), better);
-    }
-    keypoints.swap(host_candidates);
+    const int output_count = count_candidates < params::kTopK ? count_candidates : params::kTopK;
+    keypoints.resize(static_cast<size_t>(output_count));
+    check(v1_cuda::copy(keypoints.data(), source, keypoints.size() * sizeof(Keypoint),
+                     cudaMemcpyDeviceToHost), "sorted top-K D2H");
 }

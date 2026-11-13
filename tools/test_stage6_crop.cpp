@@ -1,6 +1,7 @@
 // Portable correctness test for the same row scan and comparator used on GPU.
 // Build: g++ -O2 -std=c++17 tools/test_stage6_crop.cpp -o test_stage6_crop
-#include "../src/core_headers/stage6_crop.h"
+#define PANORAMA_STAGE6_HOST_TEST
+#include "../src/stage_implementations/v1_stage6.cu"
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -87,6 +88,19 @@ void check(const std::vector<uint8_t>& mask, int w, int h) {
 
 int main() {
     try {
+        // The same transform/canvas helper runs inside prepare_canvas_kernel.
+        const Homography identity{{1,0,0,0,1,0,0,0,1}};
+        CanvasConfig canvas = make_canvas(17, 19, 17, 19, identity);
+        if (!canvas.ok || canvas.width != 17 || canvas.height != 19 || canvas.origin_x || canvas.origin_y)
+            throw std::runtime_error("Identity canvas mismatch");
+        const Homography translated{{1,0,-3.5,0,1,2.25,0,0,1}};
+        canvas = make_canvas(17, 19, 17, 19, translated);
+        if (!canvas.ok || canvas.width != 21 || canvas.height != 22 || canvas.origin_x != -4 || canvas.origin_y != 0)
+            throw std::runtime_error("Fractional canvas mismatch");
+        Homography singular{};
+        if (make_canvas(17,19,17,19,singular).ok) throw std::runtime_error("Singular H accepted");
+        Homography horizon{{1,0,0,0,1,0,-0.125,0,1}};
+        if (make_canvas(17,19,17,19,horizon).ok) throw std::runtime_error("Horizon crossing accepted");
         // Exhaustively cover all 4x4 masks: holes, disconnected regions, flat
         // histograms, increasing/decreasing stacks, and equal-area/width ties.
         for (unsigned bits = 0; bits < (1u << 16); ++bits) {
@@ -112,7 +126,7 @@ int main() {
         std::vector<uint8_t> tied_rows(513, 0);
         for (int y = 0; y < 513; y += 2) tied_rows[y] = 1;
         check(tied_rows, 1, 513);
-        std::cout << "PASS: 65,536 exhaustive masks, 1,000 random masks, 5 boundary cases\n";
+        std::cout << "PASS: canvas checks, 65,536 exhaustive masks, 1,000 random masks, 5 boundary cases\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

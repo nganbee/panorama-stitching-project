@@ -2,14 +2,13 @@
 // Authors: Team 8
 // Description: Version 1 end-to-end CUDA pipeline.
 //
-// V1 is deliberately a correctness-first baseline. Each current CUDA stage
-// exposes a synchronous host-buffer wrapper, so a stage timing includes its
-// allocations and host/device transfers. Version 2 can replace this glue with
-// a persistent device workspace and separate CUDA-event timing.
+// Basic GPU S1-S6. Stage/kernel/copy times use CUDA events; end-to-end uses
+// the host clock and includes allocations, launches, synchronization and copies.
+// Intermediate host buffers are allowed in V1; device residency belongs to V5.
 
 #include "cuda_pipeline.h"
-#include "../core_headers/v0_stages.h"
 #include "../core_headers/v1_stages.h"
+#include "../core_headers/cuda_utils.cuh"
 #include <cuda_runtime.h>
 #include <chrono>
 #include <cmath>
@@ -28,10 +27,15 @@ double elapsed_ms(Clock::time_point start) {
 }
 
 template <typename Function>
-double measure(Function&& function) {
-    const auto start = Clock::now();
+void measure(double& target, Function&& function) {
+    struct StageScope {
+        double* previous;
+        explicit StageScope(double& field) : previous(v1_cuda::active_profile->stage) {
+            v1_cuda::active_profile->stage = &field;
+        }
+        ~StageScope() { v1_cuda::active_profile->stage = previous; }
+    } scope(target);
     function();
-    return elapsed_ms(start);
 }
 
 Image make_selftest_image(int width, int height) {
@@ -56,27 +60,29 @@ bool run_v1(const Image& A, const Image& B, PipelineResult& out) {
     if (!valid_rgb_image(A) || !valid_rgb_image(B)) return false;
 
     try {
+        v1_cuda::Profile profile(out.times);
+        v1_cuda::ProfileScope profile_scope(profile);
         Gray gray_a, gray_b, blur_a, blur_b, response_a, response_b;
         std::vector<Keypoint> keypoints_a, keypoints_b;
         std::vector<Descriptor> descriptors_a, descriptors_b;
         std::vector<Match> matches;
 
         // S1: each stage wrapper is synchronous and processes A and B in turn.
-        out.times.gray = measure([&] {
+        measure(out.times.gray, [&] {
             v1_rgb_to_gray(A, gray_a);
             v1_rgb_to_gray(B, gray_b);
         });
-        out.times.blur = measure([&] {
+        measure(out.times.blur, [&] {
             v1_gaussian_blur(gray_a, blur_a);
             v1_gaussian_blur(gray_b, blur_b);
         });
 
         // S2.
-        out.times.harris = measure([&] {
+        measure(out.times.harris, [&] {
             v1_harris_response(blur_a, response_a);
             v1_harris_response(blur_b, response_b);
         });
-        out.times.nms_topk = measure([&] {
+        measure(out.times.nms_topk, [&] {
             v1_nms_topk(response_a, keypoints_a);
             v1_nms_topk(response_b, keypoints_b);
         });
@@ -84,13 +90,13 @@ bool run_v1(const Image& A, const Image& B, PipelineResult& out) {
         out.nKpB = static_cast<int>(keypoints_b.size());
 
         // S3.
-        out.times.describe = measure([&] {
+        measure(out.times.describe, [&] {
             v1_describe(blur_a, keypoints_a, descriptors_a);
             v1_describe(blur_b, keypoints_b, descriptors_b);
         });
 
         // S4.
-        out.times.match = measure([&] {
+        measure(out.times.match, [&] {
             v1_match(descriptors_a, descriptors_b, matches);
         });
         out.nMatches = static_cast<int>(matches.size());
@@ -99,10 +105,10 @@ bool run_v1(const Image& A, const Image& B, PipelineResult& out) {
             return false;
         }
 
-        // S5: CPU V0 reference implementation for the first integrated V1.
+        // S5: sampling, DLT, scoring and refinement all execute on the GPU.
         bool homography_ok = false;
-        out.times.ransac = measure([&] {
-            homography_ok = v0_ransac_homography(
+        measure(out.times.ransac, [&] {
+            homography_ok = v1_ransac_homography(
                 keypoints_a, keypoints_b, matches, out.H, out.nInliers);
         });
         if (!homography_ok) {
@@ -111,9 +117,10 @@ bool run_v1(const Image& A, const Image& B, PipelineResult& out) {
         }
 
         // S6.
-        out.times.warp_blend = measure([&] {
+        measure(out.times.warp_blend, [&] {
             v1_warp_blend(A, B, out.H, out.panorama);
         });
+        v1_cuda::check(cudaDeviceSynchronize());
         out.times.end_to_end = elapsed_ms(total_start);
 
         if (!valid_rgb_image(out.panorama)) return false;

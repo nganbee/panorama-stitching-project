@@ -1,73 +1,96 @@
 // File: v1_stage6.cu
-// Authors: Tran Kim Ngan
-// Description: Ghép ảnh bằng inverse warp, nội suy song tuyến tính và feather blending.
-//              CPU chuẩn bị phép biến đổi/canvas; GPU warp, tạo mask, tìm vùng crop và cắt ảnh.
-// External sources: none
+// V1 S6: all transform, canvas, warp, blending and crop computations on GPU.
 #include "../core_headers/v1_stages.h"
-#include "../core_headers/stage6_crop.h"
-#include <cuda_runtime.h>
-#include <algorithm>
+#ifndef PANORAMA_STAGE6_HOST_TEST
+#include "../core_headers/cuda_utils.cuh"
+#endif
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <iostream>
-#include <limits>
-#include <vector>
+#include <utility>
 
+
+// V1-only crop helpers. Portable tests include this file in helper-test mode.
+#ifdef __CUDACC__
+#define STAGE6_HD __host__ __device__
+#else
+#define STAGE6_HD
+#endif
+
+namespace stage6_crop {
+struct Rect {
+    int x, y, w, h;
+};
+
+// V0 prefers area, width, then the first candidate in its row-major scan.
+// An explicit total order preserves that choice when rows finish out of order.
+STAGE6_HD inline bool better(const Rect& candidate, const Rect& best) {
+    const long long area = static_cast<long long>(candidate.w) * candidate.h;
+    const long long best_area = static_cast<long long>(best.w) * best.h;
+    if (area != best_area) return area > best_area;
+    if (candidate.w != best.w) return candidate.w > best.w;
+    const int bottom = candidate.y + candidate.h;
+    const int best_bottom = best.y + best.h;
+    if (bottom != best_bottom) return bottom < best_bottom;
+    return candidate.x < best.x;
+}
+
+// Each row owns its stack; no synchronization or atomics are needed here.
+STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, int* stack) {
+    Rect best{};
+    int stack_size = 0;
+    for (int x = 0; x <= width; ++x) {
+        const int current = x < width ? heights[x] : 0;
+        while (stack_size > 0 && current < heights[stack[stack_size - 1]]) {
+            const int bar = stack[--stack_size];
+            const int left = stack_size == 0 ? 0 : stack[stack_size - 1] + 1;
+            const Rect candidate{left, y - heights[bar] + 1, x - left, heights[bar]};
+            if (better(candidate, best)) best = candidate;
+        }
+        if (x < width) stack[stack_size++] = x;
+    }
+    return best;
+}
+} // namespace stage6_crop
+
+#undef STAGE6_HD
+
+#ifdef __CUDACC__
+#define S6_HD __host__ __device__
+#else
+#define S6_HD
+#endif
 namespace {
-
 constexpr int kMaxCanvasDimension = 32768;
 constexpr size_t kMaxCanvasPixels = size_t{64} * 1024 * 1024;
 constexpr double kRoundoffFactor = 64.0 * DBL_EPSILON;
-
-#ifndef CUDA_CHECK
-// Ghi mã lỗi CUDA và vị trí gọi ra stderr; macro này không dừng hay ném ngoại lệ.
-#define CUDA_CHECK(call)                                                       \
-    do {                                                                      \
-        cudaError_t err = (call);                                              \
-        if (err != cudaSuccess) {                                              \
-            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__       \
-                      << " code=" << err << " \"" << cudaGetErrorString(err)   \
-                      << "\"\n";                                             \
-        }                                                                     \
-    } while (0)
-#endif
-
-// Vùng crop trên canvas: góc trên trái (x, y), chiều rộng w và chiều cao h.
 using GpuRect = stage6_crop::Rect;
-
-// =========================================================================
-// 1. HOST PREPARATION HELPERS (O(1) Matrix & Bounding Box)
-// =========================================================================
-
-// CPU: chiếu điểm (x, y) qua homography h rồi chia cho tọa độ thuần nhất z.
-// Ghi kết quả vào out_x/out_y; trả false nếu z quá gần 0 hoặc kết quả không hữu hạn.
-// Dùng để chiếu bốn góc ảnh B sang hệ tọa độ ảnh A khi tính kích thước canvas.
-bool project_host(const double h[9], double x, double y, double& out_x, double& out_y) {
+S6_HD bool finite(double x) { return x >= -DBL_MAX && x <= DBL_MAX; }
+S6_HD bool project_point(const double h[9], double x, double y, double& out_x, double& out_y) {
     const double z = h[6] * x + h[7] * y + h[8];
-    const double scale = std::abs(h[6] * x) + std::abs(h[7] * y) + std::abs(h[8]);
-    if (!std::isfinite(z) || z == 0.0 || std::abs(z) <= kRoundoffFactor * scale) return false;
+    const double scale = fabs(h[6] * x) + fabs(h[7] * y) + fabs(h[8]);
+    if (!finite(z) || z == 0.0 || fabs(z) <= kRoundoffFactor * scale) return false;
     out_x = (h[0] * x + h[1] * y + h[2]) / z;
     out_y = (h[3] * x + h[4] * y + h[5]) / z;
-    return std::isfinite(out_x) && std::isfinite(out_y);
+    return finite(out_x) && finite(out_y);
 }
 
-// CPU: đưa giá trị rất gần số nguyên về đúng số nguyên đó để khử sai số số thực.
+// GPU helper: đưa giá trị rất gần số nguyên về đúng số nguyên đó để khử sai số số thực.
 // Tránh floor/ceil làm canvas rộng hoặc cao thêm một pixel ngoài dự kiến.
-double snap_integer(double value) {
-    const double nearest = std::round(value);
-    return std::abs(value - nearest) <= 1e-8 + kRoundoffFactor * std::abs(value)
+S6_HD double snap_integer(double value) {
+    const double nearest = round(value);
+    return fabs(value - nearest) <= 1e-8 + kRoundoffFactor * fabs(value)
         ? nearest : value;
 }
 
-// CPU: kiểm tra H hữu hạn, chuẩn hóa theo hệ số có trị tuyệt đối lớn nhất,
+// GPU helper: kiểm tra H hữu hạn, chuẩn hóa theo hệ số có trị tuyệt đối lớn nhất,
 // rồi tạo h (B -> A) và inverse (A -> B) cho phép chiếu ngược.
-bool prepare_transform(const Homography& H, double h[9], double inverse[9]) {
+S6_HD bool prepare_transform(const Homography& H, double h[9], double inverse[9]) {
     double scale = 0.0;
     for (double value : H.h) {
-        if (!std::isfinite(value)) return false;
-        scale = std::max(scale, std::abs(value));
+        if (!finite(value)) return false;
+        scale = fmax(scale, fabs(value));
     }
     if (scale == 0.0) return false;
     for (int i = 0; i < 9; ++i) h[i] = H.h[i] / scale;
@@ -86,27 +109,56 @@ bool prepare_transform(const Homography& H, double h[9], double inverse[9]) {
     const double t1 = h[1] * inverse[3];
     const double t2 = h[2] * inverse[6];
     const double determinant = t0 + t1 + t2;
-    const double determinant_scale = std::abs(t0) + std::abs(t1) + std::abs(t2);
-    if (!std::isfinite(determinant) || determinant == 0.0 ||
-        std::abs(determinant) <= kRoundoffFactor * determinant_scale) return false;
+    const double determinant_scale = fabs(t0) + fabs(t1) + fabs(t2);
+    if (!finite(determinant) || determinant == 0.0 ||
+        fabs(determinant) <= kRoundoffFactor * determinant_scale) return false;
     return true;
 }
 
-// =========================================================================
-// 2. DEVICE KERNELS (WARP, FEATHER BLEND, HISTOGRAM SCAN, CROP)
-// =========================================================================
 
-// GPU: phiên bản chiếu điểm tương tự project_host, dùng trong kernel warp.
-__device__ inline bool project_device(const double h[9], double x, double y, double& out_x, double& out_y) {
-    const double z = h[6] * x + h[7] * y + h[8];
-    const double scale = fabs(h[6] * x) + fabs(h[7] * y) + fabs(h[8]);
-    if (!isfinite(z) || z == 0.0 || fabs(z) <= 64.0 * DBL_EPSILON * scale) return false;
-    out_x = (h[0] * x + h[1] * y + h[2]) / z;
-    out_y = (h[3] * x + h[4] * y + h[5]) / z;
-    return isfinite(out_x) && isfinite(out_y);
+struct CanvasConfig {
+    Homography inverse{};
+    int origin_x = 0, origin_y = 0, width = 0, height = 0, ok = 0;
+};
+
+S6_HD CanvasConfig make_canvas(int aw, int ah, int bw, int bh, const Homography& H) {
+    CanvasConfig result{};
+    double h[9];
+    if (!prepare_transform(H, h, result.inverse.h)) return result;
+    double min_x = 0, min_y = 0, max_x = aw - 1.0, max_y = ah - 1.0;
+    int denominator_sign = 0;
+    for (int corner = 0; corner < 4; ++corner) {
+        const double bx = (corner & 1) ? bw - 1.0 : 0.0;
+        const double by = (corner & 2) ? bh - 1.0 : 0.0;
+        double ax, ay;
+        if (!project_point(h, bx, by, ax, ay)) return result;
+        const double z = h[6] * bx + h[7] * by + h[8];
+        const int sign = z > 0 ? 1 : -1;
+        if (denominator_sign != 0 && denominator_sign != sign) return result;
+        denominator_sign = sign;
+        ax = snap_integer(ax); ay = snap_integer(ay);
+        min_x = fmin(min_x, ax); min_y = fmin(min_y, ay);
+        max_x = fmax(max_x, ax); max_y = fmax(max_y, ay);
+    }
+    min_x = floor(min_x); min_y = floor(min_y);
+    max_x = ceil(max_x); max_y = ceil(max_y);
+    const double width = max_x - min_x + 1.0, height = max_y - min_y + 1.0;
+    if (!finite(width) || !finite(height) || width <= 0 || height <= 0 ||
+        width > kMaxCanvasDimension || height > kMaxCanvasDimension) return result;
+    result.width = static_cast<int>(width); result.height = static_cast<int>(height);
+    if (static_cast<size_t>(result.width) * result.height > kMaxCanvasPixels) return result;
+    result.origin_x = static_cast<int>(min_x); result.origin_y = static_cast<int>(min_y);
+    result.ok = 1;
+    return result;
 }
 
-// GPU: kẹp một kênh màu vào [0, 255], làm tròn tới số nguyên gần nhất
+#ifndef PANORAMA_STAGE6_HOST_TEST
+__global__ void prepare_canvas_kernel(int aw, int ah, int bw, int bh,
+                                       Homography H, CanvasConfig* config) {
+    if (blockIdx.x || threadIdx.x) return;
+    *config = make_canvas(aw, ah, bw, bh, H);
+}
+
 __device__ inline uint8_t rounded_channel_device(double value) {
     value = fmax(0.0, fmin(255.0, value));
     return static_cast<uint8_t>(floor(value + 0.5));
@@ -133,7 +185,7 @@ __global__ void warp_blend_kernel(
 
     double bx = 0.0, by = 0.0;
     const double sample_tolerance = 1e-7 + 64.0 * DBL_EPSILON * (Bw > Bh ? Bw : Bh);
-    const bool in_B = project_device(inv_H.h, ax, ay, bx, by) &&
+    const bool in_B = project_point(inv_H.h, ax, ay, bx, by) &&
                       bx >= -sample_tolerance && bx <= (Bw - 1.0) + sample_tolerance &&
                       by >= -sample_tolerance && by <= (Bh - 1.0) + sample_tolerance;
 
@@ -261,163 +313,53 @@ __global__ void crop_image_kernel(
     dst[dst_idx + 2] = src[src_idx + 2];
 }
 
-}  // namespace
 
-// =========================================================================
-// 3. HÀM CHÍNH: v1_warp_blend (CPU ĐIỀU PHỐI, GPU XỬ LÝ ẢNH)
-// =========================================================================
+#endif // PANORAMA_STAGE6_HOST_TEST
+} // namespace
+#undef S6_HD
 
-// Ghép hai ảnh RGB A, B thành pano; H ánh xạ tọa độ B sang tọa độ A.
-// CPU kiểm tra đầu vào, chuẩn bị ma trận và canvas bao cả A lẫn B sau biến đổi.
-// Sau khi chép ảnh lên GPU, lần lượt chạy warp/blend, tìm hình chữ nhật hợp lệ
-// lớn nhất và crop. CPU đọc thông tin vùng crop để cấp phát ảnh kết quả,
-// rồi nhận ảnh đã cắt về pano và giải phóng các buffer GPU.
-// Đầu vào/phép biến đổi/canvas không hợp lệ hoặc không có vùng crop: pano rỗng.
-// Lỗi CUDA được macro CUDA_CHECK ghi ra stderr, không tự hủy luồng xử lý.
+#ifndef PANORAMA_STAGE6_HOST_TEST
 void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& pano) {
-    // Đưa đầu ra về ảnh rỗng khi một bước kiểm tra không đạt.
-    auto fail = [&]() { pano = Image{}; };
-    if (!valid_rgb_image(A) || !valid_rgb_image(B)) { fail(); return; }
+    pano = Image{};
+    if (!valid_rgb_image(A) || !valid_rgb_image(B)) return;
+    v1_cuda::Buffer<CanvasConfig> device_config(1);
+    v1_cuda::launch([&] { prepare_canvas_kernel<<<1, 1>>>(
+        A.w, A.h, B.w, B.h, H, device_config.data); });
+    CanvasConfig config;
+    v1_cuda::copy(&config, device_config.data, sizeof(config), cudaMemcpyDeviceToHost);
+    if (!config.ok) return;
 
-    double h[9], inverse[9];
-    if (!prepare_transform(H, h, inverse)) { fail(); return; }
+    // CPU uses GPU-produced dimensions only for allocation and launch geometry.
+    const int width = config.width, height = config.height;
+    const size_t pixels = static_cast<size_t>(width) * height;
+    v1_cuda::Buffer<uint8_t> a(A.data.size()), b(B.data.size()), canvas(pixels * 3), valid(pixels);
+    v1_cuda::Buffer<int> heights(pixels), stacks(pixels);
+    v1_cuda::Buffer<GpuRect> rows(height), rect(1);
+    v1_cuda::copy(a.data, A.data.data(), A.data.size(), cudaMemcpyHostToDevice);
+    v1_cuda::copy(b.data, B.data.data(), B.data.size(), cudaMemcpyHostToDevice);
+    const dim3 block(16, 16);
+    const dim3 grid((width + 15) / 16, (height + 15) / 16);
+    v1_cuda::launch([&] { warp_blend_kernel<<<grid, block>>>(
+        a.data, A.w, A.h, b.data, B.w, B.h, config.inverse,
+        config.origin_x, config.origin_y, width, height, canvas.data, valid.data); });
+    constexpr int threads = 128;
+    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(width + threads - 1) / threads, threads>>>(
+        valid.data, width, height, heights.data); });
+    v1_cuda::launch([&] { find_crop_rows_kernel<<<(height + threads - 1) / threads, threads>>>(
+        heights.data, width, height, stacks.data, rows.data); });
+    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(rows.data, height, rect.data); });
+    GpuRect crop{};
+    v1_cuda::copy(&crop, rect.data, sizeof(crop), cudaMemcpyDeviceToHost);
+    if (crop.w <= 0 || crop.h <= 0) return;
 
-    // 1. Tính toán bounding box canvas trên Host (chỉ 4 góc, O(1))
-    double min_x = 0.0, min_y = 0.0;
-    double max_x = A.w - 1.0, max_y = A.h - 1.0;
-    int denominator_sign = 0;
-    for (int corner = 0; corner < 4; ++corner) {
-        const double bx = (corner & 1) ? B.w - 1.0 : 0.0;
-        const double by = (corner & 2) ? B.h - 1.0 : 0.0;
-        double ax, ay;
-        if (!project_host(h, bx, by, ax, ay)) { fail(); return; }
-        const double z = h[6] * bx + h[7] * by + h[8];
-        const int sign = z > 0.0 ? 1 : -1;
-        if (denominator_sign != 0 && denominator_sign != sign) { fail(); return; }
-        denominator_sign = sign;
-        ax = snap_integer(ax);
-        ay = snap_integer(ay);
-        min_x = std::min(min_x, ax);
-        min_y = std::min(min_y, ay);
-        max_x = std::max(max_x, ax);
-        max_y = std::max(max_y, ay);
-    }
-    min_x = std::floor(min_x);
-    min_y = std::floor(min_y);
-    max_x = std::ceil(max_x);
-    max_y = std::ceil(max_y);
-
-    const double width = max_x - min_x + 1.0;
-    const double height = max_y - min_y + 1.0;
-    if (!std::isfinite(width) || !std::isfinite(height) ||
-        width <= 0.0 || height <= 0.0 ||
-        width > kMaxCanvasDimension || height > kMaxCanvasDimension) {
-        fail(); return;
-    }
-
-    const int origin_x = static_cast<int>(min_x), origin_y = static_cast<int>(min_y);
-    const int pano_w = static_cast<int>(width), pano_h = static_cast<int>(height);
-    const size_t pixels = static_cast<size_t>(pano_w) * pano_h;
-    if (pixels > kMaxCanvasPixels) { fail(); return; }
-
-    // 2. Cấp phát bộ nhớ Device (GPU)
-    uint8_t *d_A = nullptr, *d_B = nullptr, *d_pano = nullptr, *d_valid = nullptr;
-    int* d_crop_workspace = nullptr;
-
-    const size_t bytes_A = static_cast<size_t>(A.w) * A.h * 3;
-    const size_t bytes_B = static_cast<size_t>(B.w) * B.h * 3;
-    const size_t bytes_pano = pixels * 3;
-    const size_t bytes_valid = pixels;
-
-    CUDA_CHECK(cudaMalloc(&d_A, bytes_A));
-    CUDA_CHECK(cudaMalloc(&d_B, bytes_B));
-    CUDA_CHECK(cudaMalloc(&d_pano, bytes_pano));
-    CUDA_CHECK(cudaMalloc(&d_valid, bytes_valid));
-
-    // Lưu trữ histogram
-    const size_t workspace_bytes = 2 * pixels * sizeof(int) +
-        (static_cast<size_t>(pano_h) + 1) * sizeof(GpuRect);
-    CUDA_CHECK(cudaMalloc(&d_crop_workspace, workspace_bytes));
-    int* d_heights = d_crop_workspace;
-    int* d_stacks = d_crop_workspace + pixels;
-    GpuRect* d_crop_rows = reinterpret_cast<GpuRect*>(d_crop_workspace + 2 * pixels);
-    GpuRect* d_crop_rect = d_crop_rows + pano_h;
-
-    // 3. Truyền dữ liệu Host -> Device (H2D)
-    CUDA_CHECK(cudaMemcpy(d_A, A.data.data(), bytes_A, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_B, B.data.data(), bytes_B, cudaMemcpyHostToDevice));
-
-    Homography inv_H;
-    for (int i = 0; i < 9; ++i) inv_H.h[i] = inverse[i];
-
-    // 4. KERNEL 1: Inverse Warping + Feather Blending (Toàn bộ trên GPU)
-    dim3 block(16, 16);
-    dim3 grid((pano_w + block.x - 1) / block.x, (pano_h + block.y - 1) / block.y);
-
-    warp_blend_kernel<<<grid, block>>>(
-        d_A, A.w, A.h,
-        d_B, B.w, B.h,
-        inv_H,
-        origin_x, origin_y,
-        pano_w, pano_h,
-        d_pano, d_valid
-    );
-    CUDA_CHECK(cudaGetLastError());
-
-    // 5. KERNEL 2: Quét biểu đồ histogram tìm Largest Valid Rectangle (Toàn bộ trên GPU)
-    constexpr int crop_threads = 128;
-    build_crop_histograms_kernel<<<(pano_w + crop_threads - 1) / crop_threads, crop_threads>>>(
-        d_valid, pano_w, pano_h, d_heights);
-    CUDA_CHECK(cudaGetLastError());
-    find_crop_rows_kernel<<<(pano_h + crop_threads - 1) / crop_threads, crop_threads>>>(
-        d_heights, pano_w, pano_h, d_stacks, d_crop_rows);
-    CUDA_CHECK(cudaGetLastError());
-    reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(d_crop_rows, pano_h, d_crop_rect);
-    CUDA_CHECK(cudaGetLastError());
-
-    // Đọc toạ độ crop về Host
-    GpuRect crop;
-    CUDA_CHECK(cudaMemcpy(&crop, d_crop_rect, sizeof(GpuRect), cudaMemcpyDeviceToHost));
-
-    if (crop.w <= 0 || crop.h <= 0) {
-        CUDA_CHECK(cudaFree(d_A));
-        CUDA_CHECK(cudaFree(d_B));
-        CUDA_CHECK(cudaFree(d_pano));
-        CUDA_CHECK(cudaFree(d_valid));
-        CUDA_CHECK(cudaFree(d_crop_workspace));
-        fail();
-        return;
-    }
-
-    // 6. KERNEL 3: Thực hiện Crop ảnh trực tiếp trên GPU
-    uint8_t* d_cropped_pano = nullptr;
-    const size_t bytes_cropped = static_cast<size_t>(crop.w) * crop.h * 3;
-    CUDA_CHECK(cudaMalloc(&d_cropped_pano, bytes_cropped));
-
-    dim3 crop_block(16, 16);
-    dim3 crop_grid((crop.w + crop_block.x - 1) / crop_block.x,
-                   (crop.h + crop_block.y - 1) / crop_block.y);
-
-    crop_image_kernel<<<crop_grid, crop_block>>>(
-        d_pano, pano_w, pano_h,
-        d_cropped_pano, crop.w, crop.h,
-        crop.x, crop.y
-    );
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // 7. Truyền kết quả Device -> Host (D2H)
-    pano.w = crop.w;
-    pano.h = crop.h;
-    pano.c = 3;
-    pano.data.resize(bytes_cropped);
-    CUDA_CHECK(cudaMemcpy(pano.data.data(), d_cropped_pano, bytes_cropped, cudaMemcpyDeviceToHost));
-
-    // 8. Giải phóng toàn bộ bộ nhớ GPU
-    CUDA_CHECK(cudaFree(d_A));
-    CUDA_CHECK(cudaFree(d_B));
-    CUDA_CHECK(cudaFree(d_pano));
-    CUDA_CHECK(cudaFree(d_valid));
-    CUDA_CHECK(cudaFree(d_crop_workspace));
-    CUDA_CHECK(cudaFree(d_cropped_pano));
+    const size_t bytes = static_cast<size_t>(crop.w) * crop.h * 3;
+    v1_cuda::Buffer<uint8_t> cropped(bytes);
+    const dim3 crop_grid((crop.w + 15) / 16, (crop.h + 15) / 16);
+    v1_cuda::launch([&] { crop_image_kernel<<<crop_grid, block>>>(
+        canvas.data, width, height, cropped.data, crop.w, crop.h, crop.x, crop.y); });
+    Image result;
+    result.w = crop.w; result.h = crop.h; result.c = 3; result.data.resize(bytes);
+    v1_cuda::copy(result.data.data(), cropped.data, bytes, cudaMemcpyDeviceToHost);
+    pano = std::move(result);
 }
+#endif // PANORAMA_STAGE6_HOST_TEST

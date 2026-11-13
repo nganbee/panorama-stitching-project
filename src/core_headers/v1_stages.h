@@ -22,6 +22,11 @@ void v1_describe(const Gray& blurred, const std::vector<Keypoint>& kps,
 void v1_match(const std::vector<Descriptor>& a, const std::vector<Descriptor>& b,
               std::vector<Match>& matches);
 
-// S6: CUDA inverse warp, feather blend, and valid crop.
-// Invalid input returns an empty image. CUDA failures are logged to stderr.
+// S5: GPU match validation, sampling, normalized DLT, scoring and refinement.
+// H maps B -> A. Invalid/degenerate data returns false; CUDA failures throw.
+bool v1_ransac_homography(const std::vector<Keypoint>& kpA, const std::vector<Keypoint>& kpB,
+                          const std::vector<Match>& matches, Homography& H, int& nInliers);
+
+// S6: GPU transform/canvas preparation, inverse warp, feather blend, and crop.
+// Invalid input returns an empty image. CUDA failures throw std::runtime_error.
 void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& pano);

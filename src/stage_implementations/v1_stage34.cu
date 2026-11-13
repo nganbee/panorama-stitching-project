@@ -1,5 +1,6 @@
 // Baseline CUDA S3/S4: global memory, one thread per keypoint/query.
 #include "../core_headers/v1_stages.h"
+#include "../core_headers/cuda_utils.cuh"
 #include <cuda_runtime.h>
 #include <climits>
 #include <stdexcept>
@@ -107,16 +108,16 @@ void v1_describe(const Gray& blurred, const std::vector<Keypoint>& kps,
     Buffer<Keypoint> points(n);
     Buffer<Descriptor> result(n);
     Buffer<int> invalid(1);
-    check(cudaMemcpy(gray.p, blurred.data.data(), blurred.data.size() * sizeof(float), cudaMemcpyHostToDevice));
-    check(cudaMemcpy(points.p, kps.data(), kps.size() * sizeof(Keypoint), cudaMemcpyHostToDevice));
-    check(cudaMemset(invalid.p, 0, sizeof(int)));
-    describe_kernel<<<blocks(n), 128>>>(gray.p, blurred.w, blurred.h, points.p, n, result.p, invalid.p);
+    check(v1_cuda::copy(gray.p, blurred.data.data(), blurred.data.size() * sizeof(float), cudaMemcpyHostToDevice));
+    check(v1_cuda::copy(points.p, kps.data(), kps.size() * sizeof(Keypoint), cudaMemcpyHostToDevice));
+    check(v1_cuda::clear(invalid.p, sizeof(int)));
+    v1_cuda::launch([&] { describe_kernel<<<blocks(n), 128>>>(gray.p, blurred.w, blurred.h, points.p, n, result.p, invalid.p); });
     check(cudaGetLastError());
     int bad = 0;
-    check(cudaMemcpy(&bad, invalid.p, sizeof(int), cudaMemcpyDeviceToHost));
+    check(v1_cuda::copy(&bad, invalid.p, sizeof(int), cudaMemcpyDeviceToHost));
     if (bad) return;
     std::vector<Descriptor> host(n);
-    check(cudaMemcpy(host.data(), result.p, host.size() * sizeof(Descriptor), cudaMemcpyDeviceToHost));
+    check(v1_cuda::copy(host.data(), result.p, host.size() * sizeof(Descriptor), cudaMemcpyDeviceToHost));
     desc.swap(host);
 }
 
@@ -128,19 +129,19 @@ void v1_match(const std::vector<Descriptor>& a, const std::vector<Descriptor>& b
     Buffer<Descriptor> da(na), db(nb);
     Buffer<int> forward(na), reverse(nb), first(na), second(na), keep(na), size(1);
     Buffer<Match> result(na);
-    check(cudaMemcpy(da.p, a.data(), a.size() * sizeof(Descriptor), cudaMemcpyHostToDevice));
-    check(cudaMemcpy(db.p, b.data(), b.size() * sizeof(Descriptor), cudaMemcpyHostToDevice));
-    nearest_kernel<<<blocks(na), 128>>>(da.p, na, db.p, nb, forward.p, first.p, second.p);
+    check(v1_cuda::copy(da.p, a.data(), a.size() * sizeof(Descriptor), cudaMemcpyHostToDevice));
+    check(v1_cuda::copy(db.p, b.data(), b.size() * sizeof(Descriptor), cudaMemcpyHostToDevice));
+    v1_cuda::launch([&] { nearest_kernel<<<blocks(na), 128>>>(da.p, na, db.p, nb, forward.p, first.p, second.p); });
     check(cudaGetLastError());
-    nearest_kernel<<<blocks(nb), 128>>>(db.p, nb, da.p, na, reverse.p, nullptr, nullptr);
+    v1_cuda::launch([&] { nearest_kernel<<<blocks(nb), 128>>>(db.p, nb, da.p, na, reverse.p, nullptr, nullptr); });
     check(cudaGetLastError());
-    filter_kernel<<<blocks(na), 128>>>(na, forward.p, reverse.p, first.p, second.p, keep.p);
+    v1_cuda::launch([&] { filter_kernel<<<blocks(na), 128>>>(na, forward.p, reverse.p, first.p, second.p, keep.p); });
     check(cudaGetLastError());
-    compact_kernel<<<1, 1>>>(na, keep.p, forward.p, first.p, result.p, size.p);
+    v1_cuda::launch([&] { compact_kernel<<<1, 1>>>(na, keep.p, forward.p, first.p, result.p, size.p); });
     check(cudaGetLastError());
     int n = 0;
-    check(cudaMemcpy(&n, size.p, sizeof(int), cudaMemcpyDeviceToHost));
+    check(v1_cuda::copy(&n, size.p, sizeof(int), cudaMemcpyDeviceToHost));
     std::vector<Match> host(n);
-    if (n) check(cudaMemcpy(host.data(), result.p, host.size() * sizeof(Match), cudaMemcpyDeviceToHost));
+    if (n) check(v1_cuda::copy(host.data(), result.p, host.size() * sizeof(Match), cudaMemcpyDeviceToHost));
     matches.swap(host);
 }

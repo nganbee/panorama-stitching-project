@@ -86,7 +86,7 @@ void run_random_parity() {
     std::vector<Keypoint> cpu_keypoints, gpu_keypoints;
     v0_nms_topk(cpu_response, cpu_keypoints);
     // Feed the same response to both implementations to test NMS and the
-    // deterministic host top-K ordering independently of Harris arithmetic.
+    // deterministic GPU top-K ordering independently of Harris arithmetic.
     v1_nms_topk(cpu_response, gpu_keypoints);
     compare_keypoints(cpu_keypoints, gpu_keypoints, 1e-4f);
 }
@@ -116,12 +116,31 @@ void run_constant_parity() {
             "constant image should have no keypoints");
 }
 
+void run_topk_parity() {
+    // Synthetic isolated peaks exercise ties, non-power-of-two candidate counts,
+    // and truncation beyond K=3000 without coupling to Harris roundoff.
+    for (int width : {97, 511}) {
+        Gray response;
+        response.w = width; response.h = width - 24;
+        response.data.assign(static_cast<size_t>(response.w) * response.h, 0.0f);
+        int index = 0;
+        for (int y = params::kBorder; y < response.h - params::kBorder; y += 6)
+            for (int x = params::kBorder; x < response.w - params::kBorder; x += 6)
+                response.data[static_cast<size_t>(y) * response.w + x] = float(10 + (index++ % 7));
+        std::vector<Keypoint> cpu, gpu, repeated;
+        v0_nms_topk(response, cpu); v1_nms_topk(response, gpu); v1_nms_topk(response, repeated);
+        compare_keypoints(cpu, gpu, 0); compare_keypoints(gpu, repeated, 0);
+        if (width > 100) require(gpu.size() == size_t(params::kTopK), "GPU top-K truncation not covered");
+    }
+}
+
 } // namespace
 
 int main() {
     try {
         run_random_parity();
         run_constant_parity();
+        run_topk_parity();
         std::puts("S1/S2 CUDA parity tests passed");
         return 0;
     } catch (const std::exception& error) {
