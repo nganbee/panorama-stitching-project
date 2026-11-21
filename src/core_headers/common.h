@@ -84,6 +84,7 @@ struct StageTimes {
     double gray = 0, blur = 0, harris = 0, nms_topk = 0;
     double describe = 0, match = 0, ransac = 0, warp_blend = 0;
     double h2d = 0, d2h = 0;         // host-device transfer (0 in V0)
+    double h2d_bytes = 0, d2h_bytes = 0; // bytes moved by explicit copies (V5 comparison)
     double kernel_total = 0;         // sum of GPU kernel time (V1+)
     double end_to_end = 0;           // excludes image load/save
 };

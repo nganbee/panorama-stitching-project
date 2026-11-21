@@ -1,8 +1,8 @@
-// File: main.cpp
-// Authors: Team 8
-// Description: Command-line entry point for the sequential V0 pipeline.
-//              Image I/O is outside the timed pipeline.
-// External sources: stb_image and stb_image_write by Sean Barrett (public domain/MIT).
+    // File: main.cpp
+    // Authors: Team 8
+    // Description: Command-line entry point for the sequential V0 pipeline.
+    //              Image I/O is outside the timed pipeline.
+    // External sources: stb_image and stb_image_write by Sean Barrett (public domain/MIT).
 #include "../core_headers/versions.h"
 #include "../core_headers/report_io.h"
 #include "../libraries/stb_image.h"
@@ -184,7 +184,13 @@ void print_usage(const char* program) {
         "Usage: %s <left_image> <right_image> <output_image> "
         "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
         "       %s --dump-params | --list-versions | --help\n"
-        "       %s --selftest --version N (CUDA build, N=1..3)\n", program, program, program);
+#if defined(PANORAMA_WITH_V3) && defined(PANORAMA_WITH_V5)
+        "       %s --selftest --version N (CUDA build, N=1, 3 or 5)\n", program, program, program);
+#elif defined(PANORAMA_WITH_V3)
+        "       %s --selftest --version N (CUDA build, N=1 or 3)\n", program, program, program);
+#else
+        "       %s --selftest --version N (CUDA build, N=1)\n", program, program, program);
+#endif
 }
 
 bool parse_int(const char* value, int& out) {
@@ -202,7 +208,16 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::strcmp(argv[1], "--selftest") == 0 &&
         std::strcmp(argv[2], "--version") == 0) {
         int version = -1;
-        if (!parse_int(argv[3], version) || version < 1 || version > 3) return 2;
+#if defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3) && defined(PANORAMA_WITH_V5)
+        if (!parse_int(argv[3], version) || (version != 1 && version != 3 && version != 5)) return 2;
+        if (version == 3) return cuda_selftest_v3() ? 0 : 1;
+        if (version == 5) return cuda_selftest_v5() ? 0 : 1;
+#elif defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3)
+        if (!parse_int(argv[3], version) || (version != 1 && version != 3)) return 2;
+        if (version == 3) return cuda_selftest_v3() ? 0 : 1;
+#else
+        if (!parse_int(argv[3], version) || version != 1) return 2;
+#endif
 #ifdef PANORAMA_WITH_CUDA
         return cuda_selftest(version) ? 0 : 1;
 #else
@@ -215,7 +230,7 @@ int main(int argc, char** argv) {
         write_parameters_json(std::cout); return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--list-versions") == 0) {
-        for (int v=0; v<=3; ++v) if (get_version(v)) std::printf("%d\n", v);
+        for (int v=0; v<=7; ++v) if (get_version(v)) std::printf("%d\n", v);
         return 0;
     }
     if (argc < 6) {
@@ -294,6 +309,8 @@ int main(int argc, char** argv) {
         sum.h2d += current.times.h2d;
         sum.d2h += current.times.d2h;
         sum.kernel_total += current.times.kernel_total;
+        sum.h2d_bytes += current.times.h2d_bytes;
+        sum.d2h_bytes += current.times.d2h_bytes;
         last = std::move(current);
     }
 
@@ -320,6 +337,8 @@ int main(int argc, char** argv) {
                 sum.d2h * inv_runs,
                 sum.kernel_total * inv_runs,
                 sum.end_to_end * inv_runs);
+    std::printf("avg_bytes h2d=%.0f d2h=%.0f\n",
+                sum.h2d_bytes * inv_runs, sum.d2h_bytes * inv_runs);
 
     if (!save_rgb(output_path, last.panorama)) {
         return fail(std::string("Cannot save panorama: ") + output_path);
@@ -343,6 +362,7 @@ int main(int argc, char** argv) {
         average.ransac *= inv_runs; average.warp_blend *= inv_runs;
         average.h2d *= inv_runs; average.d2h *= inv_runs;
         average.kernel_total *= inv_runs; average.end_to_end *= inv_runs;
+        average.h2d_bytes *= inv_runs; average.d2h_bytes *= inv_runs;
         std::ofstream output(json_path);
         if (!output) return fail("Cannot write metrics JSON: " + json_path);
         write_metrics_json(output, version, runs, A, B, last, average, output_path);

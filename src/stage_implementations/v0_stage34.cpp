@@ -1,5 +1,5 @@
 // File: v0_stage34.cpp
-// Authors: Team 8; maintenance assisted by OpenAI Codex.
+// Authors: Nguyen Duy Khanh
 // Description: V0 (sequential) Stage 3 BRIEF descriptors and Stage 4
 //              brute-force Hamming matching with Lowe ratio test and
 //              mutual-nearest-neighbour cross-check.

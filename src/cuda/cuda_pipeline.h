@@ -1,14 +1,13 @@
-// Authors: Team 8, with Codex implementation assistance. External sources: none.
+// File: cuda_pipeline.h
+// Authors: Team 8
+// Description: Version 1 CUDA pipeline entry points.
 #pragma once
+
 #include "../core_headers/common.h"
 
-// Real CUDA pipelines: the host retains deterministic top-K selection and
-// valid-mask cropping. RANSAC sampling, scoring and refinement run on device.
-// All failures reset the panorama and return false; diagnostics go to stderr.
+// V1 baseline: every S1-S6 computation executes in basic GPU kernels.
+// CPU wrappers only validate buffer metadata, allocate, copy and launch.
 bool run_v1(const Image& A, const Image& B, PipelineResult& out);
-bool run_v2(const Image& A, const Image& B, PipelineResult& out);
-bool run_v3(const Image& A, const Image& B, PipelineResult& out);
 
-// Executed only on an actual CUDA device. Compares device stages to the V0
-// reference, with a known homography, and returns false for any discrepancy.
+// Smoke test used by the CLI. Detailed parity tests remain in tools/.
 bool cuda_selftest(int version);

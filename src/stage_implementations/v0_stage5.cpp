@@ -1,5 +1,5 @@
 // File: v0_stage5.cpp
-// Authors: Team 8; maintenance assisted by OpenAI Codex.
+// Authors: Vu Duy Thu
 // Description: V0 (sequential) homography estimation using deterministic
 //              RANSAC, 4-point DLT, reprojection-error scoring, and an
 //              inlier-only least-squares refinement.

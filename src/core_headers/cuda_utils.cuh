@@ -1,60 +1,94 @@
-// Authors: Team 8, with Codex implementation assistance.
-// CUDA ownership and timing helpers. External sources: none.
 #pragma once
+#include "common.h"
 #include <cuda_runtime.h>
-#include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
-inline void cuda_check(cudaError_t status, const char* operation) {
+// Synchronous baseline helpers. All operations use the default stream.
+namespace v1_cuda {
+inline void check(cudaError_t status) {
     if (status != cudaSuccess)
-        throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
+        throw std::runtime_error(std::string("V1 CUDA: ") + cudaGetErrorString(status));
 }
-#define CUDA_CHECK(operation) cuda_check((operation), #operation)
 
-// Buffers grow on demand and never shrink during a cached V3 run. They own
-// exactly one allocation; copying is deliberately disabled.
-template<class T> class DeviceBuffer {
-public:
-    DeviceBuffer() = default;
-    DeviceBuffer(const DeviceBuffer&) = delete;
-    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
-    ~DeviceBuffer() { if (ptr_) cudaFree(ptr_); }
-    void reserve(std::size_t elements) {
-        if (elements <= capacity_) return;
-        T* next = nullptr;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&next), elements * sizeof(T)));
-        if (ptr_) cudaFree(ptr_);
-        ptr_ = next;
-        capacity_ = elements;
+template<class T> struct Buffer {
+    T* data = nullptr;
+    explicit Buffer(size_t n) {
+        if (n > std::numeric_limits<size_t>::max() / sizeof(T))
+            throw std::length_error("V1 CUDA buffer size overflow");
+        if (n) check(cudaMalloc(reinterpret_cast<void**>(&data), n * sizeof(T)));
     }
-    T* get() { return ptr_; }
-    const T* get() const { return ptr_; }
-private:
-    T* ptr_ = nullptr;
-    std::size_t capacity_ = 0;
+    ~Buffer() { if (data) cudaFree(data); }
+    Buffer(const Buffer&) = delete;
+    Buffer& operator=(const Buffer&) = delete;
 };
 
-// Only device intervals are measured here. Host work is timed separately by
-// steady_clock, and memcpy events are accumulated in h2d/d2h, never kernels.
-class GpuTimer {
-public:
-    GpuTimer() {
-        CUDA_CHECK(cudaEventCreate(&start_));
-        const cudaError_t status = cudaEventCreate(&stop_);
-        if (status != cudaSuccess) { cudaEventDestroy(start_); cuda_check(status, "cudaEventCreate"); }
+// One profiler per calling CPU thread; no change to the public stage APIs.
+struct Profile {
+    StageTimes& times;
+    double* stage = nullptr;
+    cudaEvent_t start = nullptr, stop = nullptr;
+    explicit Profile(StageTimes& target) : times(target) {
+        check(cudaEventCreate(&start));
+        const cudaError_t status = cudaEventCreate(&stop);
+        if (status != cudaSuccess) { cudaEventDestroy(start); check(status); }
     }
-    GpuTimer(const GpuTimer&) = delete;
-    GpuTimer& operator=(const GpuTimer&) = delete;
-    ~GpuTimer() { cudaEventDestroy(start_); cudaEventDestroy(stop_); }
-    void start(cudaStream_t stream = nullptr) { CUDA_CHECK(cudaEventRecord(start_, stream)); }
-    double stop(cudaStream_t stream = nullptr) {
-        CUDA_CHECK(cudaEventRecord(stop_, stream));
-        CUDA_CHECK(cudaEventSynchronize(stop_));
-        float elapsed = 0;
-        CUDA_CHECK(cudaEventElapsedTime(&elapsed, start_, stop_));
-        return elapsed;
-    }
-private:
-    cudaEvent_t start_{}, stop_{};
+    ~Profile() { cudaEventDestroy(start); cudaEventDestroy(stop); }
+    Profile(const Profile&) = delete;
+    Profile& operator=(const Profile&) = delete;
 };
+inline thread_local Profile* active_profile = nullptr;
+struct ProfileScope {
+    Profile* previous;
+    explicit ProfileScope(Profile& profile) : previous(active_profile) { active_profile = &profile; }
+    ~ProfileScope() { active_profile = previous; }
+    ProfileScope(const ProfileScope&) = delete;
+    ProfileScope& operator=(const ProfileScope&) = delete;
+};
+
+template<class Function> inline void timed(Function&& operation, double* category, bool kernel = false) {
+    Profile* profile = active_profile;
+    if (profile) check(cudaEventRecord(profile->start));
+    operation();
+    if (profile) {
+        check(cudaEventRecord(profile->stop));
+        check(cudaEventSynchronize(profile->stop));
+        float milliseconds = 0;
+        check(cudaEventElapsedTime(&milliseconds, profile->start, profile->stop));
+        if (category) *category += milliseconds;
+        // Stage fields contain device computation only; copies are separate.
+        if (kernel && profile->stage) *profile->stage += milliseconds;
+    }
+}
+
+template<class Function> inline void launch(Function&& operation) {
+    timed([&] { operation(); check(cudaGetLastError()); },
+          active_profile ? &active_profile->times.kernel_total : nullptr, true);
+    // Standalone stage calls are blocking too; surface asynchronous failures.
+    if (!active_profile) check(cudaDeviceSynchronize());
+}
+
+inline cudaError_t copy(void* dst, const void* src, size_t bytes, cudaMemcpyKind kind) {
+    double* category = nullptr;
+    if (active_profile) {
+        if (kind == cudaMemcpyHostToDevice) {
+            category = &active_profile->times.h2d;
+            active_profile->times.h2d_bytes += static_cast<double>(bytes);
+        }
+        if (kind == cudaMemcpyDeviceToHost) {
+            category = &active_profile->times.d2h;
+            active_profile->times.d2h_bytes += static_cast<double>(bytes);
+        }
+    }
+    if (bytes) timed([&] { check(cudaMemcpy(dst, src, bytes, kind)); }, category);
+    return cudaSuccess;
+}
+
+inline cudaError_t clear(void* dst, size_t bytes) {
+    // Setup is included in end-to-end. It is neither an explicit kernel launch
+    // nor a host/device transfer, so do not mislabel it as either category.
+    check(cudaMemset(dst, 0, bytes));
+    return cudaSuccess;
+}
+} // namespace v1_cuda

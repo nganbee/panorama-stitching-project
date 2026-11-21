@@ -1,5 +1,4 @@
 // File: stb_impl.cpp
-// Authors: Team 8 (integration wrapper); maintenance assisted by OpenAI Codex.
 // Description: Single translation unit that compiles the stb single-header libraries.
 // External sources: stb_image.h, stb_image_write.h by Sean Barrett (public domain / MIT),
 //                   https://github.com/nothings/stb

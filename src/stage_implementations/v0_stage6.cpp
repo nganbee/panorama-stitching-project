@@ -1,5 +1,5 @@
 // File: v0_stage6.cpp
-// Authors: Team 8
+// Authors: Tran Kim Ngan
 // Description: Sequential inverse bilinear warp, feather blend and valid crop.
 //              Bounds and numerical guards reviewed with Codex assistance.
 // External sources: none
