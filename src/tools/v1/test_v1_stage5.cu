@@ -1,11 +1,11 @@
-// CUDA: nvcc -O2 -std=c++17 --fmad=false tools/test_v1_stage5.cu
+// CUDA: nvcc -O2 -std=c++17 --fmad=false src/tools/v1/test_v1_stage5.cu
 //       src/stage_implementations/v0_stage5.cpp -o build/stage5_cuda_selftest
 // Portable helpers only: g++ -O2 -std=c++17 -x c++ -DPANORAMA_STAGE5_HOST_TEST
-//       tools/test_v1_stage5.cu src/stage_implementations/v0_stage5.cpp -o build/stage5_math_test
+//       src/tools/v1/test_v1_stage5.cu src/stage_implementations/v0_stage5.cpp -o build/stage5_math_test
 // The production implementation is included to test its private helpers without
 // introducing stage-specific algorithm headers or exported test APIs.
-#include "../src/stage_implementations/v1_stage5.cu"
-#include "../src/core_headers/v0_stages.h"
+#include "../../stage_implementations/v1_stage5.cu"
+#include "../../core_headers/v0_stages.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>

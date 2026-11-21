@@ -1,5 +1,5 @@
 // Integration parity + timing contract. Link the full V0/V1 pipeline sources.
-#include "../src/core_headers/versions.h"
+#include "../../core_headers/versions.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

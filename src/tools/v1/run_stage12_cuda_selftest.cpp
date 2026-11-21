@@ -2,8 +2,8 @@
 // Authors: Team 8
 // Description: V0/V1 parity checks for the basic CUDA S1-S2 implementation.
 
-#include "../src/core_headers/v0_stages.h"
-#include "../src/core_headers/v1_stages.h"
+#include "../../core_headers/v0_stages.h"
+#include "../../core_headers/v1_stages.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
