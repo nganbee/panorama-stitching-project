@@ -1,7 +1,7 @@
 // Portable correctness test for the same row scan and comparator used on GPU.
-// Build: g++ -O2 -std=c++17 tools/test_stage6_crop.cpp -o test_stage6_crop
+// Build: g++ -O2 -std=c++17 src/tools/v1/test_stage6_crop.cpp -o test_stage6_crop
 #define PANORAMA_STAGE6_HOST_TEST
-#include "../src/stage_implementations/v1_stage6.cu"
+#include "../../stage_implementations/v1_stage6.cu"
 #include <algorithm>
 #include <cstdint>
 #include <iostream>

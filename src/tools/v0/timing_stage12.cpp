@@ -5,9 +5,9 @@
 //              five timed runs. The two generated images have deterministic
 //              texture so the keypoint path is exercised without disk I/O.
 // External sources: none.
-#include "../src/core_headers/common.h"
-#include "../src/core_headers/v0_stages.h"
-#include "../src/libraries/stb_image.h"
+#include "../../core_headers/common.h"
+#include "../../core_headers/v0_stages.h"
+#include "../../libraries/stb_image.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdint>

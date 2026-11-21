@@ -2,9 +2,9 @@
 // Authors: Team 8
 // Description: Verification test comparing V0 (CPU) and V1 (CUDA) Stage 6 results.
 // External sources: none
-#include "../src/core_headers/common.h"
-#include "../src/core_headers/v0_stages.h"
-#include "../src/core_headers/v1_stages.h"
+#include "../../core_headers/common.h"
+#include "../../core_headers/v0_stages.h"
+#include "../../core_headers/v1_stages.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
