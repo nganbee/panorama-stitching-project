@@ -1,6 +1,6 @@
 // File: v3_pipeline.cu
 // Authors: Team 8
-// Description: V2 S1–S5 with V3 texture warp and compressed crop stack.
+// Description: V2 pipeline with a compressed crop stack in S6.
 
 #include "v3_pipeline.h"
 #include "v2_pipeline.h"
@@ -25,11 +25,11 @@ bool cuda_selftest_v3() {
         for (uint8_t& value : image.data) value = static_cast<uint8_t>(rng() & 255u);
 
         const Homography identity{{1,0,0,0,1,0,0,0,1}};
-        Image baseline, texture;
+        Image baseline, optimized;
         v1_warp_blend(image, image, identity, baseline);
-        v3_warp_blend(image, image, identity, texture);
-        const bool valid = valid_rgb_image(texture) && baseline.w == texture.w &&
-                           baseline.h == texture.h && baseline.data == texture.data;
+        v3_warp_blend(image, image, identity, optimized);
+        const bool valid = valid_rgb_image(optimized) && baseline.w == optimized.w &&
+                           baseline.h == optimized.h && baseline.data == optimized.data;
         std::printf("V3 CUDA S6 smoke selftest %s\n", valid ? "PASS" : "FAIL");
         return valid;
     } catch (const std::exception& error) {

@@ -19,23 +19,6 @@
 #endif
 
 namespace stage6_crop {
-struct Rect {
-    int x, y, w, h;
-};
-
-// V0 prefers area, width, then the first candidate in its row-major scan.
-// An explicit total order preserves that choice when rows finish out of order.
-STAGE6_HD inline bool better(const Rect& candidate, const Rect& best) {
-    const long long area = static_cast<long long>(candidate.w) * candidate.h;
-    const long long best_area = static_cast<long long>(best.w) * best.h;
-    if (area != best_area) return area > best_area;
-    if (candidate.w != best.w) return candidate.w > best.w;
-    const int bottom = candidate.y + candidate.h;
-    const int best_bottom = best.y + best.h;
-    if (bottom != best_bottom) return bottom < best_bottom;
-    return candidate.x < best.x;
-}
-
 // Each row owns its stack; no synchronization or atomics are needed here.
 STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, int* stack) {
     Rect best{};
@@ -62,7 +45,7 @@ STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, int* stack)
 #define S6_HD
 #endif
 namespace {
-constexpr int kMaxCanvasDimension = 32768;
+using stage6_detail::kMaxCanvasDimension;
 constexpr size_t kMaxCanvasPixels = size_t{64} * 1024 * 1024;
 constexpr double kRoundoffFactor = 64.0 * DBL_EPSILON;
 using GpuRect = stage6_crop::Rect;
@@ -314,12 +297,31 @@ __global__ void crop_image_kernel(
 }
 
 
+constexpr int kCropThreads = 128;
+
+void launch_baseline_crop_rows(const int* heights, int width, int height, void* scratch, GpuRect* rows) {
+    v1_cuda::launch([&] { find_crop_rows_kernel<<<(height + kCropThreads - 1) / kCropThreads, kCropThreads>>>(
+        heights, width, height, static_cast<int*>(scratch), rows); });
+}
+
+GpuRect find_crop(const uint8_t* valid, int width, int height, int* heights, int* stacks,
+                  GpuRect* rows, GpuRect* rect, stage6_detail::CropRowScan scan_rows) {
+    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(width + kCropThreads - 1) / kCropThreads, kCropThreads>>>(
+        valid, width, height, heights); });
+    scan_rows(heights, width, height, stacks, rows);
+    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(rows, height, rect); });
+    GpuRect crop{};
+    v1_cuda::copy(&crop, rect, sizeof(crop), cudaMemcpyDeviceToHost);
+    return crop;
+}
+
 #endif // PANORAMA_STAGE6_HOST_TEST
 } // namespace
 #undef S6_HD
 
-#ifndef PANORAMA_STAGE6_HOST_TEST
-void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& pano) {
+#if !defined(PANORAMA_STAGE6_HOST_TEST) && !defined(PANORAMA_STAGE6_NO_ENTRYPOINTS)
+void stage6_detail::warp_blend_with_crop_scan(const Image& A, const Image& B, const Homography& H,
+                                             Image& pano, CropRowScan scan_rows) {
     pano = Image{};
     if (!valid_rgb_image(A) || !valid_rgb_image(B)) return;
     v1_cuda::Buffer<CanvasConfig> device_config(1);
@@ -342,14 +344,8 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     v1_cuda::launch([&] { warp_blend_kernel<<<grid, block>>>(
         a.data, A.w, A.h, b.data, B.w, B.h, config.inverse,
         config.origin_x, config.origin_y, width, height, canvas.data, valid.data); });
-    constexpr int threads = 128;
-    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(width + threads - 1) / threads, threads>>>(
-        valid.data, width, height, heights.data); });
-    v1_cuda::launch([&] { find_crop_rows_kernel<<<(height + threads - 1) / threads, threads>>>(
-        heights.data, width, height, stacks.data, rows.data); });
-    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(rows.data, height, rect.data); });
-    GpuRect crop{};
-    v1_cuda::copy(&crop, rect.data, sizeof(crop), cudaMemcpyDeviceToHost);
+    const GpuRect crop = find_crop(valid.data, width, height, heights.data, stacks.data,
+                                  rows.data, rect.data, scan_rows);
     if (crop.w <= 0 || crop.h <= 0) return;
 
     const size_t bytes = static_cast<size_t>(crop.w) * crop.h * 3;
@@ -362,4 +358,8 @@ void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     v1_cuda::copy(result.data.data(), cropped.data, bytes, cudaMemcpyDeviceToHost);
     pano = std::move(result);
 }
-#endif // PANORAMA_STAGE6_HOST_TEST
+
+void v1_warp_blend(const Image& A, const Image& B, const Homography& H, Image& pano) {
+    stage6_detail::warp_blend_with_crop_scan(A, B, H, pano, launch_baseline_crop_rows);
+}
+#endif
