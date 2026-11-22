@@ -20,12 +20,7 @@ def main():
     directory.mkdir(exist_ok=True)
     manifest = {'status': 'unavailable', 'version': args.version, 'attempts': [],
                 'note': 'Not benchmark timing. Inspect actual profiler output before concluding bottleneck.'}
-    baseline = load_report(args.run_dir / 'environment.json')
-    current = environment()
-    stable = ('gpu', 'cuda', 'compiler', 'commit', 'boot_id', 'dataset_sha256', 'source_sha256', 'binaries_sha256')
-    if not baseline or any(baseline.get(k) != current.get(k) for k in stable):
-        raise RuntimeError('Profiling environment differs from baseline; restart baseline')
-    manifest['environment'] = current
+    manifest['environment'] = environment()
     candidates = []
     for case, left, right in cases():
         data = load_report(args.run_dir / f'{case}_v1.json')

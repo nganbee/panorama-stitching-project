@@ -1,139 +1,114 @@
 # V2 — S4 shared-memory descriptor tiling
 
-Owner: Khánh. Source, verification and notebook preparation assisted by OpenAI
-Codex. Algorithms and acceptance criteria derive from the team's V0/V1 and
-`docs/PLAN.md`. No GPU execution or speedup is claimed by this document.
+Owner: Khánh. Implementation and notebook preparation assisted by OpenAI Codex.
+Source: the team's V0/V1 implementations and the Final Project specification.
 
 ## Scope
 
-V2 changes only S4 candidate access to shared-memory tiling. S1–S3, S5–S6,
-algorithms, parameters, matching policy and host/device data flow inherit V1.
-V1 implementation files and notebook are unchanged. The common registry exposes
-V2 only when `PANORAMA_WITH_CUDA` and `PANORAMA_WITH_V2` are enabled.
+V2 changes only candidate descriptor access in S4. Each block has 128 threads,
+one query per thread, and cooperatively loads 128 descriptors into 4 KB shared
+memory. Both matching directions retain ascending traversal, Hamming distance,
+top-2, ratio test, cross-check, tie-break and ordered output. Inactive query
+threads still reach both barriers; partial tiles only read valid candidates.
 
-Each block has 128 threads, one query per thread. It cooperatively loads 128
-candidate descriptors into 4096 bytes of shared memory, scans them in ascending
-index order, then synchronizes before overwriting the tile. Inactive query
-threads still participate in barriers. Both matching directions use tiling;
-ratio test, cross-check, tie-break and ordered compaction remain unchanged.
-The candidate count bounds the final partial tile. Cache reuse in V1 and barrier
-overhead may make V2 slower; actual baseline timing and profiler evidence decide.
+S1–S3, S5–S6 and intermediate host/device transfers inherit V1 unchanged.
+There is no new S6 implementation or separate S6 diagnostic suite in V2.
+The common CLI exposes versions 0, 1 and 2; V2 is enabled with
+`PANORAMA_WITH_CUDA` and `PANORAMA_WITH_V2`.
 
-## Notebook workflow
+## Notebook structure, following the specification
 
-`test_v2.ipynb` retains the V1 style of executable cells, Markdown, panorama,
-tables and plots, with the content focused on the optimization:
+After setup/build and quick S4/integration checks, `test_v2.ipynb` has five parts:
 
-1. Setup source/GPU/dataset; validate all 12 pairs and required source files.
-2. Build V0/V1/V2 plus stage, integration, benchmark and verification binaries.
-3. Measure V0/V1 in one session, then collect actual Nsight evidence for V1.
-4. Explain the idea, inherited stages, kernel mapping and matching invariants.
-5. Run S4 parity, memcheck and synccheck. Other standalone V1 tests are optional.
-6. Check synthetic integration and one real pair before full-dataset evaluation.
-7. Verify and benchmark V2 across all 12 cases using the same session and inputs.
-8. Report correctness, raw sample dispersion, speedup, breakdown and gallery.
-9. Analyze faster/slower/failed cases with profiling evidence.
-10. List outstanding acceptance checks, deliverables, references and AI usage.
+1. **Bottleneck:** V1 per-stage timing, kernel/copy/end-to-end and real profiler
+   output supporting S4 as the optimization target.
+2. **Idea:** explain candidate reuse and synchronization/cache tradeoffs.
+3. **Implementation:** actual kernel excerpt, thread/block mapping, partial tiles
+   and matching invariants; describe the single change from V1.
+4. **Result:** verify against V0 and V1, then report S4 and end-to-end timing and
+   speedup on all 12 cases. Full stage/kernel/copy timing remains in CSV and a
+   collapsible notebook table. Show one figure with two panels: S4 and end-to-end
+   speedup, each against V0 and V1. Gallery shows V2 Medium outputs at the three
+   sites and the challenging pair; all full-resolution outputs are saved.
+5. **Analysis:** discuss faster/slower cases, S4 versus end-to-end improvement,
+   correctness failures and limitations using measured evidence.
 
-Every optimized version requires the five report parts: bottleneck, idea,
-implementation, result, analysis. Timing alone does not replace profiler output.
-Profiler and sanitizer results are excluded from speedup calculations. Missing
-tools or permission errors remain NOT VERIFIED with actual logs.
+The group's final comparison across all versions and best-version breakdown
+belong in the final report section; V2 does not repeat those charts. Profiler
+V2 is available on demand but not required by this notebook's main workflow.
+No separate stage tests for inherited S1–S3/S5/S6, statistical CV tables, source
+hashes or OS/session identity gates are added to the V2 experiment.
 
-## Source and tools
+## Files
 
-All V2 support tools are grouped in `tools/v2/`. Production implementations
-remain in `src/`; original V0/V1 tools remain at their existing paths.
-
-| File | Role |
+| File | Purpose |
 |---|---|
-| `src/stage_implementations/v2_stage4.cu` | Independent tiled matcher |
-| `src/core_headers/v2_stages.h` | Matcher interface |
-| `src/cuda/v2_pipeline.cu`, `.h` | V2 pipeline entry point |
-| `tools/v2/build.sh` | Common build flags and source lists |
-| `tools/v2/test_matching.cpp` | Exact V0/V1/V2 stage parity, tile/ratio/tie/cross-check cases |
-| `tools/v2/test_pipeline.cpp` | Synthetic integration, direct V1/V2 and failure contracts |
-| `tools/v2/benchmark_pair.cpp` | Production pipelines, warm-up plus timed samples, average metrics and panorama |
-| `tools/v2/benchmark.py` | Two-phase 12-case benchmark, session protection, statistics and statuses |
-| `tools/v2/profile.py` | Actual Nsight capture and report export; no fabricated evidence |
-| `tools/v2/verify_pair.cpp` | Real-image same-input stage and end-to-end correctness |
-| `tools/v2/verify_helpers.h` | Ordered comparisons and homography projection error |
-| `tools/v2/s6_reference.cpp` | Untimed CPU mask/canvas/crop diagnostic using V0 helpers |
-| `tools/v2/s6_gpu_diagnostics.cu` | Untimed diagnostic replay of actual V1/V2 S6 kernels |
-| `tools/v2/test_reporting.py` | Host-only reporting/failure/session regression tests |
+| `src/stage_implementations/v2_stage4.cu` | Tiled S4 matcher |
+| `src/core_headers/v2_stages.h` | Matcher declaration |
+| `src/cuda/v2_pipeline.cu`, `.h` | Integrate S4 V2 with inherited V1 stages |
+| `tools/v2/build.sh` | Build all experiment binaries with common flags |
+| `tools/v2/test_matching.cpp` | Exact S4 parity, tile/tie/ratio/cross-check cases |
+| `tools/v2/test_pipeline.cpp` | Basic synthetic integration and direct V1/V2 comparison |
+| `tools/v2/verify_pair.cpp` | Same-input S4 and full-pipeline output verification on real pairs |
+| `tools/v2/verify_helpers.h` | Ordered comparison and homography projection error |
+| `tools/v2/benchmark_pair.cpp` | Warm-up, timed production pipeline runs, samples/mean and panorama |
+| `tools/v2/benchmark.py` | Run 12 cases, preserve failures, generate timing/minimum/speedup tables |
+| `tools/v2/profile.py` | Collect actual Nsight evidence separately from benchmark timing |
+| `tools/v2/test_reporting.py` | Development tests for report correctness, outside notebook workflow |
 
-Verification S6 translation units include the original production `.cpp/.cu`
-once so private helpers/kernels remain observable without editing V1. In the
-verification binary these units replace the original S6 objects. They must not
-be linked together with those objects. Production benchmark binaries always use
-the original S6 source list, without diagnostic work.
+## Verification
 
-## Correctness
+The specification requires results consistent with V0; it does not prescribe
+numeric tolerances. Current group criteria compare ordered matches exactly,
+keypoints and inliers, H using projection error on points/a grid in B (maximum
+`1e-3 px`) and panorama shape/pixels (maximum one RGB level versus V0, plus MAE).
+Direct V1/V2 matches, projected coordinates and panorama must agree exactly.
+These are acceptance choices, not measurements or thresholds stated by the PDF.
 
-Apply the initial team thresholds from PLAN consistently; confirm them using
-V0/V1 instead of relaxing V2 alone:
+V1 extraction supplies identical descriptor inputs to V0/V1/V2 matchers. The
+verifier then compares real full-pipeline outputs; it does not independently
+re-test gray/blur/Harris/BRIEF or access private S6 masks/crop internals. This is
+the agreed reduced V2 scope; the stricter internal S6 checks in the team PLAN
+are not implemented in this notebook.
 
-- Same-input gray/blur/Harris use the PLAN absolute/relative tolerances.
-- Keypoint count, coordinates and order match; score uses Harris tolerance.
-- Descriptor bits and all ordered match fields match. Real-pair verification
-  checks both same-input matchers and propagated full pipeline output.
-- Inliers after refinement match. Compare H via B-to-A projection on keypoints
-  and a grid covering B; maximum error is `1e-3 px`, rather than coefficient error.
-- Canvas/origin, valid mask and crop coordinates/dimensions match. RGB error is
-  at most one level per channel against V0, with MAE reported too.
-- Direct V1/V2 comparisons demand exact matches, projected coordinates and RGB.
-- Failure status is recorded explicitly. Equal pipeline failure is not a
-  verified panorama and gets no valid speedup; investigate CUDA errors separately.
+Failure statuses and logs remain visible. Equal failure is not panorama
+correctness PASS; failed or unverified results do not receive valid speedup.
 
-The mask diagnostics compare actual GPU validity with the CPU geometric reference,
-not with nonblack RGB pixels. They replay inherited kernels outside timed runs.
+## Run on Colab GPU
 
-## Run
-
-On a Colab GPU/Linux checkout containing the complete latest source:
+Use the latest complete V2 checkout, then run `test_v2.ipynb` top to bottom.
+Equivalent commands from the repository root:
 
 ```bash
 bash tools/v2/build.sh
 build/stage34_v2_selftest
 build/test_v2_pipeline
-compute-sanitizer --tool memcheck --error-exitcode 1 build/stage34_v2_selftest
-compute-sanitizer --tool synccheck --error-exitcode 1 build/stage34_v2_selftest
-```
-
-Use a NEW run directory for each comparison:
-
-```bash
 python tools/v2/benchmark.py --phase baseline --run-dir reports/v2_benchmark/run01
 python tools/v2/profile.py --run-dir reports/v2_benchmark/run01 --version 1
 python tools/v2/benchmark.py --phase optimized --run-dir reports/v2_benchmark/run01
-python tools/v2/profile.py --run-dir reports/v2_benchmark/run01 --version 2
 ```
 
-The notebook creates a unique run ID automatically. Baseline refuses to overwrite
-an old run. Optimized/profiling phases require the same GPU UUID, OS session,
-compiler, source, binaries, commit and dataset hash. Working-tree status is saved
-but creating report files alone does not invalidate a session.
+Use a fresh result directory and keep the same Colab GPU session for all versions.
+The notebook creates its directory automatically. One warm-up and five timed
+runs per case/version produce means, raw samples and minimum times. Kernel/copy
+timing uses pipeline CUDA events; end-to-end includes overhead/transfers and
+excludes image loading/saving. Each result prints the GPU name. Do not mix
+profiler timings into speedup calculations. Missing profiler support is reported
+honestly and remains missing evidence rather than a claimed PASS.
 
-Each case/version has one warm-up and five measured runs. Reports preserve all
-samples and means; Python derives minimum/maximum, standard deviation and CV,
-including stage totals. Each result prints its GPU. Failed cases keep logs and
-statuses, not successful speedup ratios. Save the executed notebook, complete
-run directory, raw profiler reports, tables and panoramas before Colab resets.
+Save the executed notebook, raw JSON/logs, `summary.csv`, `stage_comparison.csv`,
+panoramas and profiler reports. Analysis must reference actual cell outputs.
 
-## Verification available locally
-
-Host tests check reporting statistics, sample validation, failure preservation
-and session mismatch rejection:
+## Local checks and references
 
 ```bash
-python -m unittest discover -s tools/v2 -p test_benchmark.py
+python -m unittest discover -s tools/v2 -p test_reporting.py
 ```
 
-Python syntax and Bash syntax can be checked locally. CUDA compilation, parity,
-memory/barrier safety and actual performance still require a CUDA GPU run.
+Host tests verify reporting only. CUDA build, parity and performance require GPU
+execution; no such result is fabricated in the notebook.
 
-## CLI documentation consulted
-
+- Final Project PDF: sections 3, 4.2 and 5.2.
 - [NVIDIA Nsight Systems User Guide](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
 - [NVIDIA Nsight Systems Analysis Guide](https://docs.nvidia.com/nsight-systems/AnalysisGuide/)
 - [NVIDIA Nsight Compute CLI](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html)

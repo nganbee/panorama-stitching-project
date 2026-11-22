@@ -26,15 +26,5 @@ nvcc "${flags[@]}" tools/v2/test_pipeline.cpp "${pipeline[@]}" \
     -o build/test_v2_pipeline
 nvcc "${flags[@]}" tools/v2/benchmark_pair.cpp "${pipeline[@]}" \
     src/libraries/stb_impl.cpp -o build/benchmark_v2_pair
-# Verification TUs include the original S6 sources to inspect private kernels.
-# Substitute them; linking both would duplicate production S6 definitions.
-verify_pipeline=()
-for source in "${pipeline[@]}"; do
-    case "$source" in
-        */v0_stage6.cpp|*/v1_stage6.cu) ;;
-        *) verify_pipeline+=("$source") ;;
-    esac
-done
-nvcc "${flags[@]}" tools/v2/verify_pair.cpp "${verify_pipeline[@]}" \
-    tools/v2/s6_reference.cpp tools/v2/s6_gpu_diagnostics.cu \
+nvcc "${flags[@]}" tools/v2/verify_pair.cpp "${pipeline[@]}" \
     src/libraries/stb_impl.cpp -o build/verify_v2_pair

@@ -1,7 +1,7 @@
 // Authors: Team 8; V2 verification assisted by OpenAI Codex.
 // External sources: none. Acceptance criteria from docs/PLAN.md.
 #pragma once
-#include "s6_diagnostics.h"
+#include "../../src/core_headers/common.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -10,12 +10,6 @@ inline bool v2_equal_matches(const std::vector<Match>& a, const std::vector<Matc
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i)
         if (a[i].idxA != b[i].idxA || a[i].idxB != b[i].idxB || a[i].dist != b[i].dist) return false;
-    return true;
-}
-inline bool v2_equal_descriptors(const std::vector<Descriptor>& a, const std::vector<Descriptor>& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i)
-        for (int k = 0; k < 4; ++k) if (a[i].bits[k] != b[i].bits[k]) return false;
     return true;
 }
 inline bool v2_equal_keypoints(const std::vector<Keypoint>& a, const std::vector<Keypoint>& b) {
@@ -46,11 +40,4 @@ inline double v2_projection_error(const Homography& a, const Homography& b, int 
         test((w-1.0)*x/10, (h-1.0)*y/10);
     for (const auto& p : points) test(p.x,p.y);
     return worst;
-}
-inline bool v2_equal_canvas(const V2S6Diagnostics& a, const V2S6Diagnostics& b) {
-    return a.ok && b.ok && a.origin_x==b.origin_x && a.origin_y==b.origin_y &&
-           a.width==b.width && a.height==b.height;
-}
-inline bool v2_equal_crop(const V2S6Diagnostics& a, const V2S6Diagnostics& b) {
-    return a.crop_x==b.crop_x && a.crop_y==b.crop_y && a.crop_w==b.crop_w && a.crop_h==b.crop_h;
 }

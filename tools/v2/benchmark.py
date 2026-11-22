@@ -4,10 +4,8 @@ Verification is untimed. Raw samples come from production pipelines.
 """
 import argparse
 import csv
-import hashlib
 import json
 import math
-import statistics
 import subprocess
 from pathlib import Path
 
@@ -28,18 +26,10 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def fingerprint(paths):
-    digest = hashlib.sha256()
-    for path in sorted(paths):
-        digest.update(path.as_posix().encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
 def environment():
     result = {}
     for key, command in {
-        'gpu': ['nvidia-smi', '--query-gpu=name,uuid,driver_version', '--format=csv,noheader'],
+        'gpu': ['nvidia-smi', '--query-gpu=name,driver_version', '--format=csv,noheader'],
         'cuda': ['nvcc', '--version'], 'compiler': ['g++', '--version'],
         'commit': ['git', 'rev-parse', 'HEAD'], 'worktree': ['git', 'status', '--short'],
     }.items():
@@ -47,13 +37,6 @@ def environment():
         result[key] = {'returncode': run.returncode, 'text': run.stdout + run.stderr}
         if key in ('gpu', 'cuda', 'compiler') and run.returncode:
             raise RuntimeError(f'Cannot record {key}: {result[key]["text"]}')
-    result['boot_id'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    inputs = [p for _, left, right in cases() for p in (left, right)]
-    result['dataset_sha256'] = fingerprint(inputs)
-    result['source_sha256'] = fingerprint([*Path('src').rglob('*.*'), *Path('tools').rglob('*.cpp'),
-                                            *Path('tools').rglob('*.cu'), *Path('tools').rglob('*.h'),
-                                            *Path('tools').rglob('*.py'), Path('tools/v2/build.sh')])
-    result['binaries_sha256'] = fingerprint([Path('build/benchmark_v2_pair'), Path('build/verify_v2_pair')])
     return result
 
 
@@ -99,14 +82,11 @@ def timing_fields(row, version, data):
         values = [float(sample[key]) for sample in samples]
         if any(not math.isfinite(v) or v < 0 for v in values):
             raise ValueError(f'Invalid raw timing for V{version} {key}')
-        mean = statistics.mean(values)
+        mean = sum(values) / len(values)
         reported = data['timings_ms'].get(key, stages.get(key))
         if not math.isclose(mean, reported, rel_tol=1e-6, abs_tol=1e-8):
             raise ValueError(f'Raw timing mean disagrees with report for {key}')
         row[f'v{version}_{key}_min_ms'] = min(values)
-        row[f'v{version}_{key}_max_ms'] = max(values)
-        row[f'v{version}_{key}_std_ms'] = statistics.stdev(values)
-        row[f'v{version}_{key}_cv'] = statistics.stdev(values) / mean if mean else 0
     if version:
         total = data['timings_ms']['kernel_total']
         if total <= 0 or not math.isclose(sum(stages.values()), total, rel_tol=1e-5, abs_tol=1e-8):
@@ -164,10 +144,9 @@ def main():
         write_json(directory / 'environment.json', current)
     else:
         saved = load_report(directory / 'environment.json')
-        stable = ('gpu', 'cuda', 'compiler', 'commit', 'boot_id', 'dataset_sha256',
-                  'source_sha256', 'binaries_sha256')
-        if not saved or any(saved.get(key) != current.get(key) for key in stable):
-            raise RuntimeError('GPU/session/source/input/build changed; start a fresh baseline run')
+        if not saved:
+            raise RuntimeError('Run the baseline phase first in the same Colab GPU session')
+        write_json(directory / 'environment_optimized.json', current)
     images = directory / 'panoramas'
     images.mkdir(exist_ok=True)
     print(current['gpu']['text'], flush=True)

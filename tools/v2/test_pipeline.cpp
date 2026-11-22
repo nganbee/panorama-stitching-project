@@ -2,8 +2,6 @@
 // External sources: none.
 // Integration parity + timing contract. Link the full V0/V1 pipeline sources.
 #include "../../src/core_headers/versions.h"
-#include "../../src/core_headers/v0_stages.h"
-#include "../../src/core_headers/v1_stages.h"
 #include "verify_helpers.h"
 #include <algorithm>
 #include <cmath>
@@ -82,17 +80,6 @@ int main() {
                 v1.panorama.h==v2.panorama.h && v1.panorama.data==v2.panorama.data,
                 "V1/V2 inliers or panorama differ");
         std::puts("PASS: direct V1/V2 integration");
-        // S5 is inherited: explicitly preserve failure behavior for too few
-        // valid correspondences and degenerate geometry in the V2 test suite.
-        std::vector<Keypoint> line{{0,0,0},{1,2,0},{2,4,0},{3,6,0}};
-        for (int n : {3,4}) {
-            std::vector<Match> bad;
-            for (int i=0; i<n; ++i) bad.push_back({i,i,0});
-            Homography h{}; int inliers=0;
-            require(!v0_ransac_homography(line,line,bad,h,inliers), "V0 should reject invalid S5 geometry");
-            require(!v1_ransac_homography(line,line,bad,h,inliers), "Inherited GPU S5 should reject invalid geometry");
-        }
-        std::puts("PASS: insufficient/degenerate correspondences rejected");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr,"Pipeline FAIL: %s\n",e.what()); return 1; }
 }
