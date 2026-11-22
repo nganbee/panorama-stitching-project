@@ -1,8 +1,8 @@
 // Authors: Nguyen Duy Khanh; V2 coverage assisted by OpenAI Codex.
 // External sources: none. Compare both CUDA matchers against V0.
-#include "../src/core_headers/v0_stages.h"
-#include "../src/core_headers/v1_stages.h"
-#include "../src/core_headers/v2_stages.h"
+#include "../../src/core_headers/v0_stages.h"
+#include "../../src/core_headers/v1_stages.h"
+#include "../../src/core_headers/v2_stages.h"
 #include <iostream>
 #include <limits>
 #include <random>
@@ -65,6 +65,18 @@ int main() {
         ties[0] = Descriptor{}; ties[0].bits[0] = 1;
         ties[128] = ties[0];
         check_match({Descriptor{}}, ties);
+        // Strict ratio boundary: 4 < 0.8*5 is false; 3 < 0.8*5 is true.
+        Descriptor four{}, five{}, three{};
+        four.bits[0]=15; five.bits[0]=31; three.bits[0]=7;
+        check_match({Descriptor{}}, {four,five});
+        check_match({Descriptor{}}, {three,five});
+        std::vector<Match> expected;
+        v2_match({Descriptor{}}, {four,five}, expected); require(expected.empty());
+        v2_match({Descriptor{}}, {three,five}, expected); require(expected.size()==1);
+        // Both forward queries pass ratio; reverse nearest must retain idxA=0.
+        check_match({Descriptor{},Descriptor{}}, {three,five});
+        v2_match({Descriptor{},Descriptor{}}, {three,five}, expected);
+        require(expected.size()==1 && expected[0].idxA==0);
         kps.push_back({std::numeric_limits<float>::quiet_NaN(), 0, 0});
         v1_describe(image, kps, gpu);
         require(gpu.empty());

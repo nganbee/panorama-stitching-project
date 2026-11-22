@@ -1,7 +1,10 @@
 // Authors: Team 8; V2 coverage assisted by OpenAI Codex.
 // External sources: none.
 // Integration parity + timing contract. Link the full V0/V1 pipeline sources.
-#include "../src/core_headers/versions.h"
+#include "../../src/core_headers/versions.h"
+#include "../../src/core_headers/v0_stages.h"
+#include "../../src/core_headers/v1_stages.h"
+#include "verify_helpers.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -34,7 +37,8 @@ void compare(const Image& a, const Image& b, int version) {
     for (size_t i = 0; i < cpu.matches.size(); ++i)
         require(cpu.matches[i].idxA == gpu.matches[i].idxA && cpu.matches[i].idxB == gpu.matches[i].idxB &&
                 cpu.matches[i].dist == gpu.matches[i].dist, "Pipeline matches differ");
-    for (int i = 0; i < 9; ++i) require(std::fabs(cpu.H.h[i] - gpu.H.h[i]) < 1e-5, "Pipeline H differs");
+    require(v2_projection_error(cpu.H, gpu.H, b.w, b.h, cpu.keypointsB) <= 1e-3,
+            "Pipeline H projection error exceeds 1e-3 px");
     require(cpu.panorama.w == gpu.panorama.w && cpu.panorama.h == gpu.panorama.h,
             "Pipeline canvas/crop differs");
     for (size_t i = 0; i < cpu.panorama.data.size(); ++i)
@@ -69,6 +73,26 @@ int main() {
             require(!get_version(version)(flat, flat, empty), "No-feature input must fail");
             compare(a, a, version); // profiler restored after a failed run
         }
+        PipelineResult v1, v2;
+        v1.collect_debug = v2.collect_debug = true;
+        require(run_v1(a,b,v1) && run_v2(a,b,v2), "Direct V1/V2 integration failed");
+        require(v2_equal_matches(v1.matches,v2.matches), "V1/V2 ordered matches differ");
+        require(v2_projection_error(v1.H,v2.H,b.w,b.h,v1.keypointsB)==0, "V1/V2 H projection differs");
+        require(v1.nInliers==v2.nInliers && v1.panorama.w==v2.panorama.w &&
+                v1.panorama.h==v2.panorama.h && v1.panorama.data==v2.panorama.data,
+                "V1/V2 inliers or panorama differ");
+        std::puts("PASS: direct V1/V2 integration");
+        // S5 is inherited: explicitly preserve failure behavior for too few
+        // valid correspondences and degenerate geometry in the V2 test suite.
+        std::vector<Keypoint> line{{0,0,0},{1,2,0},{2,4,0},{3,6,0}};
+        for (int n : {3,4}) {
+            std::vector<Match> bad;
+            for (int i=0; i<n; ++i) bad.push_back({i,i,0});
+            Homography h{}; int inliers=0;
+            require(!v0_ransac_homography(line,line,bad,h,inliers), "V0 should reject invalid S5 geometry");
+            require(!v1_ransac_homography(line,line,bad,h,inliers), "Inherited GPU S5 should reject invalid geometry");
+        }
+        std::puts("PASS: insufficient/degenerate correspondences rejected");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr,"Pipeline FAIL: %s\n",e.what()); return 1; }
 }
