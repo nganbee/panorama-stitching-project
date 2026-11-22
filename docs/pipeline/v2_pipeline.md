@@ -27,8 +27,9 @@ After setup/build and quick S4/integration checks, `test_v2.ipynb` has five part
    and matching invariants; describe the single change from V1.
 4. **Result:** verify against V0 and V1, then report S4 and end-to-end timing and
    speedup on all 12 cases. Full stage/kernel/copy timing remains in CSV and a
-   collapsible notebook table. Show one figure with two panels: S4 and end-to-end
-   speedup, each against V0 and V1. Gallery shows V2 Medium outputs at the three
+   collapsible notebook table. Show one figure with four panels: S4 and end-to-end
+   by row, V1/V2 and V0/V2 by column, each with its own scale and value labels.
+   Gallery shows V2 Medium outputs at the three
    sites and the challenging pair; all full-resolution outputs are saved.
 5. **Analysis:** discuss faster/slower cases, S4 versus end-to-end improvement,
    correctness failures and limitations using measured evidence.
