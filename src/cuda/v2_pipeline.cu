@@ -42,7 +42,8 @@ void measure(double& target, Function&& function) {
 
 } // namespace
 
-bool run_v2(const Image& A, const Image& B, PipelineResult& out) {
+bool pipeline_detail::run_v2_with_stage6(const Image& A, const Image& B, PipelineResult& out,
+                                        Stage6Fn stage6, const char* version_name) {
     const bool collect_debug = out.collect_debug;
     out = PipelineResult{};
     out.collect_debug = collect_debug;
@@ -109,7 +110,7 @@ bool run_v2(const Image& A, const Image& B, PipelineResult& out) {
 
         // S6.
         measure(out.times.warp_blend, [&] {
-            v1_warp_blend(A, B, out.H, out.panorama);
+            stage6(A, B, out.H, out.panorama);
         });
         v1_cuda::check(cudaDeviceSynchronize());
         out.times.end_to_end = elapsed_ms(total_start);
@@ -124,8 +125,12 @@ bool run_v2(const Image& A, const Image& B, PipelineResult& out) {
         return true;
     } catch (const std::exception& error) {
         out.times.end_to_end = elapsed_ms(total_start);
-        std::fprintf(stderr, "V2 CUDA pipeline failed: %s\n", error.what());
+        std::fprintf(stderr, "%s CUDA pipeline failed: %s\n", version_name, error.what());
         out.panorama = Image{};
         return false;
     }
+}
+
+bool run_v2(const Image& A, const Image& B, PipelineResult& out) {
+    return pipeline_detail::run_v2_with_stage6(A, B, out, v1_warp_blend, "V2");
 }

@@ -38,7 +38,7 @@ void project_compare(const Homography& a,const Homography& b,double x,double y) 
     require(std::isfinite(dx)&&std::isfinite(dy)&&std::hypot(dx,dy)<=1e-3,
             "Homography projection error exceeds 1e-3 px");
 }
-void compare(const PipelineResult& ref,const PipelineResult& gpu,const Image& b) {
+void compare(const PipelineResult& ref,const PipelineResult& gpu,const Image& b,const char* label) {
     require(ref.nKpA==gpu.nKpA&&ref.nKpB==gpu.nKpB,"Keypoint counts differ");
     require(ref.nMatches==gpu.nMatches&&ref.nInliers==gpu.nInliers,"Match/inlier counts differ");
     for(int side=0;side<2;++side) {
@@ -64,23 +64,28 @@ void compare(const PipelineResult& ref,const PipelineResult& gpu,const Image& b)
         const int error=std::abs(int(ref.panorama.data[i])-int(gpu.panorama.data[i]));
         require(error<=1,"Panorama RGB error exceeds 1"); mae+=error;
     }
-    std::printf("  panorama MAE=%.9f\n",mae/ref.panorama.data.size());
+    std::printf("  %s panorama MAE=%.9f\n",label,mae/ref.panorama.data.size());
 }
 void check_pair(const Image& a,const Image& b) {
-    PipelineResult cpu,baseline,texture;
-    cpu.collect_debug=baseline.collect_debug=texture.collect_debug=true;
+    PipelineResult cpu,v1,v2,v3;
+    cpu.collect_debug=v1.collect_debug=v2.collect_debug=v3.collect_debug=true;
     require(run_v0(a,b,cpu),"V0 failed; panorama parity NOT verified");
-    require(run_v1(a,b,baseline),"V1 pipeline failed");
-    require(run_v3(a,b,texture),"V3 pipeline failed");
-    compare(cpu,texture,b); compare(baseline,texture,b);
-    require(baseline.panorama.data==texture.panorama.data,"V1/V3 RGB bytes differ");
-    const auto& t=texture.times;
+    require(run_v1(a,b,v1),"V1 pipeline failed");
+    require(run_v2(a,b,v2),"V2 pipeline failed");
+    require(run_v3(a,b,v3),"V3 pipeline failed");
+    compare(cpu,v1,b,"V0/V1");
+    compare(cpu,v3,b,"V0/V3");
+    compare(v2,v3,b,"V2/V3");
+    require(v1.panorama.data==v2.panorama.data,"V1/V2 RGB bytes differ");
+    require(v2.panorama.data==v3.panorama.data,"V2/V3 RGB bytes differ");
+    require(std::equal(v2.H.h,v2.H.h+9,v3.H.h),"V2/V3 homography coefficients differ");
+    const auto& t=v3.times;
     const double stages=t.gray+t.blur+t.harris+t.nms_topk+t.describe+t.match+t.ransac+t.warp_blend;
     require(t.warp_blend>0&&t.kernel_total>0&&t.h2d>0&&t.d2h>0&&t.end_to_end>0,
             "V3 timing categories missing");
     require(std::fabs(stages-t.kernel_total)<=1e-5*std::max(1.0,stages),"V3 kernel timing sum differs");
-    std::printf("PASS: V3 pipeline vs V0/V1 (%dx%d + %dx%d, matches=%d inliers=%d)\n",
-                a.w,a.h,b.w,b.h,texture.nMatches,texture.nInliers);
+    std::printf("PASS: V3 pipeline vs V0/V1/V2 (%dx%d + %dx%d, matches=%d inliers=%d)\n",
+                a.w,a.h,b.w,b.h,v3.nMatches,v3.nInliers);
 }
 } // namespace
 int main(int argc,char** argv) {
