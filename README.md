@@ -1,5 +1,39 @@
 # Panorama stitching project
 
+## V4 — Gaussian blur shared-memory tile + halo
+
+Mở `test_v4.ipynb` trên Colab GPU, sau khi push source lên branch `v4`.
+Notebook build một CLI chạy V0/V1/V2/V3/V4, test blur và full pipeline, sanitizer,
+benchmark đủ 12 case (720p/1080p/4K), xuất JSON/CSV, bảng bottleneck và biểu đồ
+speedup blur/end-to-end. CLI chạy một warm-up rồi ít nhất 5 lần đo.
+
+V4 kế thừa đúng V3 đã merge, chỉ đổi hai pass Gaussian sang shared-memory
+tile 16×16 có halo bán kính 4. Giữ hệ số, clamp biên, precision, transfers,
+allocation và S2–S6. `run_v3` và `run_v4` dùng cùng orchestration, khác callback
+blur; cả V3 và V4 dùng V2 S4 đã tích hợp. CLI bật V4 bằng cả bốn macro
+`PANORAMA_WITH_CUDA`, `PANORAMA_WITH_V2`, `PANORAMA_WITH_V3`, `PANORAMA_WITH_V4`.
+
+Source mới: `src/stage_implementations/v4_stage1.cu`,
+`src/cuda/v4_pipeline.cu`; test và benchmark ở `src/tools/v4/`.
+Notebook có danh sách source/flags đầy đủ để build. Sau khi build:
+
+```bash
+./build/stitch_v4 --list-versions
+./build/stitch_v4 --selftest --version 4
+./build/test_v4_blur
+./build/test_v4_pipeline
+python src/tools/v4/benchmark_v4.py --runs 5
+```
+
+Kết quả nằm trong thư mục mới `out/v4_<timestamp>/`, gồm environment, logs,
+panorama, JSON mỗi case/version và summary CSV/JSON. Thêm `--reverse-order`
+khi đo sweep thứ hai để kiểm tra ảnh hưởng thứ tự V3/V4. Có thể thử tile 32×8
+hoặc 32×16 qua `PANORAMA_V4_TILE_X/Y` trong cell build, rồi chạy lại parity.
+Chưa có số đo CUDA được xác nhận ở máy local; cần lưu output Colab và profiler
+V3/V4 trước khi kết luận tối ưu có lợi. Không xem tool sanitizer/profiler thiếu
+là PASS. Nội dung V1 cũ phía dưới có thể phản ánh các milestone trước;
+source và `docs/pipeline/v1_pipeline.md` mô tả V1 hiện tại (S5 đã chạy GPU).
+
 ## Chạy project trên Google Colab
 
 ### 1. Bật GPU runtime

@@ -9,6 +9,10 @@
 #error "PANORAMA_WITH_V3 requires PANORAMA_WITH_CUDA and PANORAMA_WITH_V2"
 #endif
 
+#if defined(PANORAMA_WITH_V4) && (!defined(PANORAMA_WITH_CUDA) || !defined(PANORAMA_WITH_V3))
+#error "V4 requires PANORAMA_WITH_CUDA and PANORAMA_WITH_V3"
+#endif
+
 // One full pipeline: left=A, right=B (B warped onto A's frame).
 // Returns false on failure (e.g., too few matches).
 using PipelineFn = bool (*)(const Image& A, const Image& B, PipelineResult& out);
@@ -21,6 +25,9 @@ bool run_v0(const Image& A, const Image& B, PipelineResult& out);
 #endif
 #ifdef PANORAMA_WITH_V3
 #include "../cuda/v3_pipeline.h"
+#endif
+#ifdef PANORAMA_WITH_V4
+#include "../cuda/v4_pipeline.h"
 #endif
 #endif
 
@@ -35,6 +42,9 @@ inline PipelineFn get_version(int v) {
 #endif
 #ifdef PANORAMA_WITH_V3
         case 3: return run_v3;
+#endif
+#ifdef PANORAMA_WITH_V4
+        case 4: return run_v4; // Exact merged V3 baseline, changing only Gaussian blur
 #endif
 #endif
         default: return nullptr;

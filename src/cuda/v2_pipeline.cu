@@ -43,7 +43,8 @@ void measure(double& target, Function&& function) {
 } // namespace
 
 bool pipeline_detail::run_v2_with_stage6(const Image& A, const Image& B, PipelineResult& out,
-                                        Stage6Fn stage6, const char* version_name) {
+                                        Stage6Fn stage6, const char* version_name, BlurFn blur) {
+    if (!blur) blur = v1_gaussian_blur;
     const bool collect_debug = out.collect_debug;
     out = PipelineResult{};
     out.collect_debug = collect_debug;
@@ -65,8 +66,8 @@ bool pipeline_detail::run_v2_with_stage6(const Image& A, const Image& B, Pipelin
             v1_rgb_to_gray(B, gray_b);
         });
         measure(out.times.blur, [&] {
-            v1_gaussian_blur(gray_a, blur_a);
-            v1_gaussian_blur(gray_b, blur_b);
+            blur(gray_a, blur_a);
+            blur(gray_b, blur_b);
         });
 
         // S2.

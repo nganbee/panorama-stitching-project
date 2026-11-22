@@ -184,7 +184,9 @@ void print_usage(const char* program) {
         "Usage: %s <left_image> <right_image> <output_image> "
         "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
         "       %s --dump-params | --list-versions | --help\n"
-#ifdef PANORAMA_WITH_V3
+#ifdef PANORAMA_WITH_V4
+        "       %s --selftest --version N (CUDA build, N=1, 3 or 4)\n", program, program, program);
+#elif defined(PANORAMA_WITH_V3)
         "       %s --selftest --version N (CUDA build, N=1 or 3)\n", program, program, program);
 #else
         "       %s --selftest --version N (CUDA build, N=1)\n", program, program, program);
@@ -206,7 +208,11 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::strcmp(argv[1], "--selftest") == 0 &&
         std::strcmp(argv[2], "--version") == 0) {
         int version = -1;
-#if defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3)
+#if defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V4)
+        if (!parse_int(argv[3], version) || (version != 1 && version != 3 && version != 4)) return 2;
+        if (version == 4) return cuda_selftest_v4() ? 0 : 1;
+        if (version == 3) return cuda_selftest_v3() ? 0 : 1;
+#elif defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3)
         if (!parse_int(argv[3], version) || (version != 1 && version != 3)) return 2;
         if (version == 3) return cuda_selftest_v3() ? 0 : 1;
 #else
@@ -224,7 +230,7 @@ int main(int argc, char** argv) {
         write_parameters_json(std::cout); return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--list-versions") == 0) {
-        for (int v=0; v<=3; ++v) if (get_version(v)) std::printf("%d\n", v);
+        for (int v=0; v<=4; ++v) if (get_version(v)) std::printf("%d\n", v);
         return 0;
     }
     if (argc < 6) {
