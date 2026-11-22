@@ -7,13 +7,14 @@
 #include "../../stage_implementations/v3_stage6.cu"
 #undef PANORAMA_STAGE6_NO_ENTRYPOINTS
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <limits>
 #include <random>
 #include <stdexcept>
 
-void stage6_reference_raw(const Image&, const Image&, const Homography&,
-                          Image&, std::vector<uint8_t>&, int&, int&);
+std::array<int, 4> stage6_reference_raw(const Image&, const Image&, const Homography&,
+                                        Image&, std::vector<uint8_t>&, int&, int&);
 
 namespace {
 void require(bool ok, const char* message) {
@@ -35,7 +36,7 @@ void compare_raw(const Image& a, const Image& b, const Homography& h) {
     Image reference;
     std::vector<uint8_t> reference_mask;
     int origin_x=0,origin_y=0;
-    stage6_reference_raw(a,b,h,reference,reference_mask,origin_x,origin_y);
+    const auto reference_crop = stage6_reference_raw(a,b,h,reference,reference_mask,origin_x,origin_y);
     v1_cuda::Buffer<CanvasConfig> device_config(1);
     v1_cuda::launch([&] { prepare_canvas_kernel<<<1,1>>>(a.w,a.h,b.w,b.h,h,device_config.data); });
     CanvasConfig config;
@@ -59,6 +60,14 @@ void compare_raw(const Image& a, const Image& b, const Homography& h) {
     actual.resize(pixels);
     v1_cuda::copy(actual.data(),texture_mask.data,pixels,cudaMemcpyDeviceToHost);
     require(reference_mask == actual, "Valid mask differs from V1");
+
+    v1_cuda::Buffer<int> heights(pixels);
+    v1_cuda::Buffer<uint32_t> stacks(pixels);
+    v1_cuda::Buffer<GpuRect> rows(config.height), rect(1);
+    const GpuRect crop = find_crop(texture_mask.data, config.width, config.height, heights.data,
+                                  stacks.data, rows.data, rect.data);
+    require(reference_crop == std::array<int, 4>{crop.x, crop.y, crop.w, crop.h},
+            "Compressed-stack crop rect differs from V1");
 }
 
 void compare(const Image& a, const Image& b, const Homography& h, const char* name) {
@@ -108,7 +117,7 @@ int main() {
         compare(pattern(513,1,3),pattern(513,1,4),translation(),"single row");
         const Image large = pattern(257,263,5);
         compare(large,large,translation(63.5,-7.25),"multiple crop reduction groups");
-        compare(a,b,translation(90,0),"disjoint valid regions / crop tie ordering");
+        compare(a,pattern(a.w,a.h,6),translation(90,0),"disjoint equal-area regions / crop tie ordering");
         Homography singular = translation(); singular.h[0] = singular.h[4] = 0;
         reject(a,b,singular,"singular H");
         Homography nonfinite = translation(); nonfinite.h[2] = std::numeric_limits<double>::infinity();
@@ -117,7 +126,7 @@ int main() {
         Image malformed = a; malformed.data.pop_back();
         reject(malformed,b,translation(),"malformed RGB buffer");
         compare(a,b,translation(),"repeat after failure / texture cleanup");
-        std::puts("PASS: V3 S6 texture verification");
+        std::puts("PASS: V3 S6 texture and compressed crop stack verification");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr,"V3 S6 FAIL: %s\n",error.what());

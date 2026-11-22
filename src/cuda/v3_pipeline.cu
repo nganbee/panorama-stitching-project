@@ -1,6 +1,6 @@
 // File: v3_pipeline.cu
 // Authors: Team 8
-// Description: Independent V3 pipeline: V1 S1-S5 + V3 texture S6.
+// Description: Independent V3 pipeline: V1 S1-S5 + V3 texture warp and compressed crop stack.
 //
 // Basic GPU S1-S6. Stage/kernel/copy times use CUDA events; end-to-end uses
 // the host clock and includes allocations, launches, synchronization and copies.

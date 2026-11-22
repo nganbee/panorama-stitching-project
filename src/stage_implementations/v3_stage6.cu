@@ -1,4 +1,4 @@
-// V3 S6: independent copy of V1 S6 with texture point fetches only.
+// V3 S6: texture point fetches and a compressed histogram stack for crop.
 // Authors: Team 8; implementation assisted by OpenAI Codex.
 // Keep projection, manual double bilinear, feather, valid mask and crop as V1.
 #include "../core_headers/v3_stages.h"
@@ -39,19 +39,32 @@ STAGE6_HD inline bool better(const Rect& candidate, const Rect& best) {
     return candidate.x < best.x;
 }
 
-// Each row owns its stack; no synchronization or atomics are needed here.
-STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, int* stack) {
+// Each entry packs a height and its earliest valid column into one word.
+constexpr int kStackFieldBits = 16;
+constexpr uint32_t kStackFieldMask = (uint32_t{1} << kStackFieldBits) - 1;
+
+STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, uint32_t* stack) {
     Rect best{};
     int stack_size = 0;
+    // Keep the top entry in a register. Zero represents an empty stack.
+    uint32_t top = 0;
+    int top_height = 0;
     for (int x = 0; x <= width; ++x) {
         const int current = x < width ? heights[x] : 0;
-        while (stack_size > 0 && current < heights[stack[stack_size - 1]]) {
-            const int bar = stack[--stack_size];
-            const int left = stack_size == 0 ? 0 : stack[stack_size - 1] + 1;
-            const Rect candidate{left, y - heights[bar] + 1, x - left, heights[bar]};
+        int left = x;
+        while (current < top_height) {
+            left = static_cast<int>(top & kStackFieldMask);
+            const Rect candidate{left, y - top_height + 1, x - left, top_height};
             if (better(candidate, best)) best = candidate;
+            top = stack_size > 0 ? stack[--stack_size] : 0;
+            top_height = static_cast<int>(top >> kStackFieldBits);
         }
-        if (x < width) stack[stack_size++] = x;
+        // Equal heights already share the earliest start. Skip zero-height bars.
+        if (current > top_height) {
+            if (top_height > 0) stack[stack_size++] = top;
+            top = (static_cast<uint32_t>(current) << kStackFieldBits) | static_cast<uint32_t>(left);
+            top_height = current;
+        }
     }
     return best;
 }
@@ -66,6 +79,8 @@ STAGE6_HD inline Rect scan_row(const int* heights, int width, int y, int* stack)
 #endif
 namespace {
 constexpr int kMaxCanvasDimension = 32768;
+static_assert(kMaxCanvasDimension <= stage6_crop::kStackFieldMask,
+              "Canvas dimensions must fit in a crop stack entry");
 constexpr size_t kMaxCanvasPixels = size_t{64} * 1024 * 1024;
 constexpr double kRoundoffFactor = 64.0 * DBL_EPSILON;
 using GpuRect = stage6_crop::Rect;
@@ -293,11 +308,10 @@ __global__ void build_crop_histograms_kernel(
     }
 }
 
-// Crop phase 2: a separate thread scans each row, with its own stack.
-// All rows run independently instead of one thread scanning the whole image.
-__global__ void find_crop_rows_kernel(
+// A separate thread scans each row with its own compressed stack.
+__global__ void find_crop_rows_compressed_stack_kernel(
     const int* __restrict__ heights, int width, int height,
-    int* __restrict__ stacks, GpuRect* __restrict__ rows)
+    uint32_t* __restrict__ stacks, GpuRect* __restrict__ rows)
 {
     const int y = blockIdx.x * blockDim.x + threadIdx.x;
     if (y >= height) return;
@@ -347,6 +361,20 @@ __global__ void crop_image_kernel(
     dst[dst_idx + 2] = src[src_idx + 2];
 }
 
+GpuRect find_crop(const uint8_t* valid, int width, int height, int* heights, uint32_t* stacks,
+                  GpuRect* rows, GpuRect* rect) {
+    constexpr int threads = 128;
+    const int row_blocks = (height + threads - 1) / threads;
+    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(width + threads - 1) / threads, threads>>>(
+        valid, width, height, heights); });
+    v1_cuda::launch([&] { find_crop_rows_compressed_stack_kernel<<<row_blocks, threads>>>(
+        heights, width, height, stacks, rows); });
+    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(rows, height, rect); });
+    GpuRect crop{};
+    v1_cuda::copy(&crop, rect, sizeof(crop), cudaMemcpyDeviceToHost);
+    return crop;
+}
+
 
 #endif // PANORAMA_STAGE6_HOST_TEST
 } // namespace
@@ -367,7 +395,8 @@ void v3_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
     const int width = config.width, height = config.height;
     const size_t pixels = static_cast<size_t>(width) * height;
     v1_cuda::Buffer<uint8_t> a(A.data.size()), b(B.data.size()), canvas(pixels * 3), valid(pixels);
-    v1_cuda::Buffer<int> heights(pixels), stacks(pixels);
+    v1_cuda::Buffer<int> heights(pixels);
+    v1_cuda::Buffer<uint32_t> stacks(pixels);
     v1_cuda::Buffer<GpuRect> rows(height), rect(1);
     v1_cuda::copy(a.data, A.data.data(), A.data.size(), cudaMemcpyHostToDevice);
     v1_cuda::copy(b.data, B.data.data(), B.data.size(), cudaMemcpyHostToDevice);
@@ -381,14 +410,8 @@ void v3_warp_blend(const Image& A, const Image& B, const Homography& H, Image& p
             config.origin_x, config.origin_y, width, height, canvas.data, valid.data,
             texture_a.view(), texture_b.view()); });
     }
-    constexpr int threads = 128;
-    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(width + threads - 1) / threads, threads>>>(
-        valid.data, width, height, heights.data); });
-    v1_cuda::launch([&] { find_crop_rows_kernel<<<(height + threads - 1) / threads, threads>>>(
-        heights.data, width, height, stacks.data, rows.data); });
-    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(rows.data, height, rect.data); });
-    GpuRect crop{};
-    v1_cuda::copy(&crop, rect.data, sizeof(crop), cudaMemcpyDeviceToHost);
+    const GpuRect crop = find_crop(valid.data, width, height, heights.data, stacks.data,
+                                  rows.data, rect.data);
     if (crop.w <= 0 || crop.h <= 0) return;
 
     const size_t bytes = static_cast<size_t>(crop.w) * crop.h * 3;

@@ -1,13 +1,14 @@
-// Test-only access to the original V1 raw canvas/mask; production V1 is unchanged.
+// Test-only access to the original V1 raw canvas, mask and crop rectangle.
 // Rename only the exported wrapper so the normal V1 object can also be linked.
 #include "../../core_headers/v1_stages.h"
+#include <array>
 #define v1_warp_blend stage6_reference_unused_wrapper
 #include "../../stage_implementations/v1_stage6.cu"
 #undef v1_warp_blend
 
-void stage6_reference_raw(const Image& a, const Image& b, const Homography& h,
-                          Image& canvas, std::vector<uint8_t>& mask,
-                          int& origin_x, int& origin_y) {
+std::array<int, 4> stage6_reference_raw(const Image& a, const Image& b, const Homography& h,
+                                        Image& canvas, std::vector<uint8_t>& mask,
+                                        int& origin_x, int& origin_y) {
     v1_cuda::Buffer<CanvasConfig> device_config(1);
     v1_cuda::launch([&] { prepare_canvas_kernel<<<1,1>>>(
         a.w,a.h,b.w,b.h,h,device_config.data); });
@@ -27,4 +28,17 @@ void stage6_reference_raw(const Image& a, const Image& b, const Homography& h,
         canvas.w,canvas.h,output.data,valid.data); });
     v1_cuda::copy(canvas.data.data(),output.data,canvas.data.size(),cudaMemcpyDeviceToHost);
     v1_cuda::copy(mask.data(),valid.data,pixels,cudaMemcpyDeviceToHost);
+
+    v1_cuda::Buffer<int> heights(pixels), stacks(pixels);
+    v1_cuda::Buffer<GpuRect> rows(canvas.h), rect(1);
+    constexpr int threads = 128;
+    v1_cuda::launch([&] { build_crop_histograms_kernel<<<(canvas.w + threads - 1) / threads, threads>>>(
+        valid.data, canvas.w, canvas.h, heights.data); });
+    v1_cuda::launch([&] { find_crop_rows_kernel<<<(canvas.h + threads - 1) / threads, threads>>>(
+        heights.data, canvas.w, canvas.h, stacks.data, rows.data); });
+    v1_cuda::launch([&] { reduce_crop_rows_kernel<<<1, kCropReduceThreads>>>(
+        rows.data, canvas.h, rect.data); });
+    GpuRect crop{};
+    v1_cuda::copy(&crop, rect.data, sizeof(crop), cudaMemcpyDeviceToHost);
+    return {crop.x, crop.y, crop.w, crop.h};
 }
