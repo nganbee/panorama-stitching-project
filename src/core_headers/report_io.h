@@ -39,6 +39,9 @@ inline void write_parameters_json(std::ostream& o) {
       << ",\"available_versions\":[0";
 #ifdef PANORAMA_WITH_CUDA
     o << ",1";
+#ifdef PANORAMA_WITH_V2
+    o << ",2";
+#endif
 #endif
     o << "]}\n";
 }

@@ -12,6 +12,9 @@ using PipelineFn = bool (*)(const Image& A, const Image& B, PipelineResult& out)
 bool run_v0(const Image& A, const Image& B, PipelineResult& out);  
 #ifdef PANORAMA_WITH_CUDA
 #include "../cuda/cuda_pipeline.h"
+#ifdef PANORAMA_WITH_V2
+#include "../cuda/v2_pipeline.h"
+#endif
 #endif
 
 // Registry used by main.cu for "--version N"
@@ -20,6 +23,9 @@ inline PipelineFn get_version(int v) {
         case 0: return run_v0;
 #ifdef PANORAMA_WITH_CUDA
         case 1: return run_v1;
+#ifdef PANORAMA_WITH_V2
+        case 2: return run_v2;
+#endif
 #endif
         default: return nullptr;
     }
