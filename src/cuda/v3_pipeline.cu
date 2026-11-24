@@ -10,14 +10,9 @@
 #include <exception>
 #include <random>
 
-bool panorama_detail::run_v3_with_blur(const Image& A, const Image& B, PipelineResult& out,
-                                      BlurFn blur, int version) {
-    return pipeline_detail::run_v2_with_stage6(
-        A, B, out, v3_warp_blend, version == 4 ? "V4" : "V3", blur);
-}
-
 bool run_v3(const Image& A, const Image& B, PipelineResult& out) {
-    return panorama_detail::run_v3_with_blur(A, B, out, v1_gaussian_blur, 3);
+    return pipeline_detail::run_v2_with_stage6(
+        A, B, out, v3_warp_blend, "V3", v1_gaussian_blur);
 }
 
 bool cuda_selftest_v3() {
