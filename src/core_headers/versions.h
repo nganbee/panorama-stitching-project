@@ -44,7 +44,7 @@ inline PipelineFn get_version(int v) {
         case 3: return run_v3;
 #endif
 #ifdef PANORAMA_WITH_V4
-        case 4: return run_v4; // Exact merged V3 baseline, changing only Gaussian blur
+        case 4: return run_v4; // Exact merged V3 baseline, optimizing S6 warp/blend
 #endif
 #endif
         default: return nullptr;

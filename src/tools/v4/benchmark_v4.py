@@ -118,11 +118,11 @@ def main():
                 })
             if len(reports) == 3:
                 t3, t4 = reports[3]["timings_ms"], reports[4]["timings_ms"]
-                row["blur_speedup_v3_v4"] = t3["blur"] / t4["blur"] if t4["blur"] > 0 else None
+                row["warp_blend_speedup_v3_v4"] = t3["warp_blend"] / t4["warp_blend"] if t4["warp_blend"] > 0 else None
                 row["e2e_speedup_v3_v4"] = t3["end_to_end"] / t4["end_to_end"] if t4["end_to_end"] > 0 else None
                 row["e2e_speedup_v0_v4"] = reports[0]["timings_ms"]["end_to_end"] / t4["end_to_end"]
-                row["v3_blur_share_e2e_pct"] = 100 * t3["blur"] / t3["end_to_end"]
-                row["v3_blur_share_kernel_pct"] = 100 * t3["blur"] / t3["kernel_total"]
+                row["v3_warp_blend_share_e2e_pct"] = 100 * t3["warp_blend"] / t3["end_to_end"]
+                row["v3_warp_blend_share_kernel_pct"] = 100 * t3["warp_blend"] / t3["kernel_total"]
                 for version in (3, 4):
                     hottest = max(reports[version]["stage_timings_ms"], key=reports[version]["stage_timings_ms"].get)
                     row[f"v{version}_bottleneck_stage"] = hottest

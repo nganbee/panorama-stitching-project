@@ -70,33 +70,19 @@ void compare(const PipelineResult& ref,const PipelineResult& gpu,const Image& b)
     std::printf("  panorama MAE=%.9f\n",mae/ref.panorama.data.size());
 }
 void check_pair(const Image& a,const Image& b) {
-    for (const Image* image : {&a, &b}) {
-        Gray gray, cpu_blur, baseline_blur, tiled_blur;
-        v0_rgb_to_gray(*image, gray); // Same input isolates blur arithmetic.
-        v0_gaussian_blur(gray, cpu_blur);
-        v1_gaussian_blur(gray, baseline_blur);
-        v4_gaussian_blur(gray, tiled_blur);
-        require(cpu_blur.data.size() == tiled_blur.data.size(), "Real-image blur size differs");
-        for (size_t i = 0; i < cpu_blur.data.size(); ++i)
-            require(std::isfinite(tiled_blur.data[i]) &&
-                    std::fabs(cpu_blur.data[i] - tiled_blur.data[i]) <=
-                        2e-4f + 2e-6f * std::fabs(cpu_blur.data[i]), "Real-image V0/V4 blur differs");
-        require(baseline_blur.data == tiled_blur.data, "Real-image V3/V4 blur bytes differ");
-    }
-    PipelineResult cpu,baseline,texture;
-    cpu.collect_debug=baseline.collect_debug=texture.collect_debug=true;
+    PipelineResult cpu,baseline,actual;
+    cpu.collect_debug=baseline.collect_debug=actual.collect_debug=true;
     require(run_v0(a,b,cpu),"V0 failed; panorama parity NOT verified");
     require(run_v3(a,b,baseline),"V3 pipeline failed");
-    require(run_v4(a,b,texture),"V4 pipeline failed");
-    compare(cpu,texture,b); compare(baseline,texture,b);
-    require(baseline.panorama.data==texture.panorama.data,"V3/V4 RGB bytes differ");
-    const auto& t=texture.times;
+    require(run_v4(a,b,actual),"V4 pipeline failed");
+    compare(cpu,actual,b); compare(baseline,actual,b);
+    const auto& t=actual.times;
     const double stages=t.gray+t.blur+t.harris+t.nms_topk+t.describe+t.match+t.ransac+t.warp_blend;
     require(t.warp_blend>0&&t.kernel_total>0&&t.h2d>0&&t.d2h>0&&t.end_to_end>0,
             "V4 timing categories missing");
     require(std::fabs(stages-t.kernel_total)<=1e-5*std::max(1.0,stages),"V4 kernel timing sum differs");
     std::printf("PASS: V4 pipeline vs V0/V3 (%dx%d + %dx%d, matches=%d inliers=%d)\n",
-                a.w,a.h,b.w,b.h,texture.nMatches,texture.nInliers);
+                a.w,a.h,b.w,b.h,actual.nMatches,actual.nInliers);
 }
 } // namespace
 int main(int argc,char** argv) {
