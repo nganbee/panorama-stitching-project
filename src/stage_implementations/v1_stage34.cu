@@ -166,21 +166,4 @@ bool describe(const float* blurred, int w, int h, const Keypoint* keypoints, int
     return bad == 0;
 }
 
-int match(const Descriptor* a, int na, const Descriptor* b, int nb, Match* matches) {
-    if (na <= 0 || nb <= 0) return 0;
-    Buffer<int> forward(na), reverse(nb), first(na), second(na), keep(na), size(1);
-    v1_cuda::launch([&] { nearest_kernel<<<blocks(na), 128>>>(a, na, b, nb, forward.p, first.p, second.p); });
-    check(cudaGetLastError());
-    v1_cuda::launch([&] { nearest_kernel<<<blocks(nb), 128>>>(b, nb, a, na, reverse.p, nullptr, nullptr); });
-    check(cudaGetLastError());
-    v1_cuda::launch([&] { filter_kernel<<<blocks(na), 128>>>(na, forward.p, reverse.p, first.p, second.p, keep.p); });
-    check(cudaGetLastError());
-    v1_cuda::launch([&] { compact_kernel<<<1, 1>>>(na, keep.p, forward.p, first.p, matches, size.p); });
-    check(cudaGetLastError());
-    int n = 0; // metadata only
-    check(v1_cuda::copy(&n, size.p, sizeof(int), cudaMemcpyDeviceToHost));
-    if (n < 0 || n > na) throw std::runtime_error("CUDA S3/S4: invalid match count");
-    return n;
-}
-
 } // namespace v5

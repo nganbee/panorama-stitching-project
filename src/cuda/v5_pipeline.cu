@@ -3,18 +3,18 @@
 // Description: V5 end-to-end CUDA pipeline: GPU data residency.
 // External sources: none.
 //
-// V5 keeps the computation of the latest integrated version (V1 S1-S5 kernels
-// and the V3 texture S6 kernel) and changes only the data path:
+// V5 keeps the computation of the latest integrated version (V4: V1 S1-S3/S5,
+// V2 S4 tiling, V3 S6 compressed crop, V4 S6 warp) and changes only the data path:
 //   * A and B are uploaded once and reused by S1 and S6.
 //   * gray/blur/Harris images, keypoints, descriptors, matches and H stay in
 //     device buffers between stages.
 //   * Only counts/status flags, canvas metadata, the crop rectangle and the
 //     final panorama are copied device->host.
 // Stage/kernel/copy timing and the end-to-end clock follow V1 exactly, and the
-// copied byte counts are recorded so V5 can be compared with V1/V3.
+// copied byte counts are recorded so V5 can be compared with V4.
 
 #include "v5_pipeline.h"
-#include "v3_pipeline.h"
+#include "v4_pipeline.h"
 #include "../core_headers/v5_stages.h"
 #include "../core_headers/cuda_utils.cuh"
 #include <cuda_runtime.h>
@@ -25,8 +25,8 @@
 #include <utility>
 #include <vector>
 
-#if !defined(PANORAMA_WITH_CUDA) || !defined(PANORAMA_WITH_V3)
-#error "V5 builds on the V3 texture S6: define PANORAMA_WITH_CUDA and PANORAMA_WITH_V3"
+#if !defined(PANORAMA_WITH_CUDA) || !defined(PANORAMA_WITH_V4)
+#error "V5 builds on V4: define PANORAMA_WITH_CUDA, PANORAMA_WITH_V2, PANORAMA_WITH_V3 and PANORAMA_WITH_V4"
 #endif
 
 namespace {
@@ -188,7 +188,7 @@ bool run_v5(const Image& A, const Image& B, PipelineResult& out) {
 
 bool cuda_selftest_v5() {
     try {
-        // Same synthetic pair as the V3 pipeline test: B is A shifted by 12 px.
+        // Same synthetic pair as the V4 pipeline test: B is A shifted by 12 px.
         const Image a = make_selftest_image(193, 157);
         Image b = a;
         for (int y = 0; y < b.h; ++y)
@@ -198,7 +198,7 @@ bool cuda_selftest_v5() {
                         x + 12 < a.w ? a.data[(static_cast<size_t>(y) * a.w + x + 12) * 3 + c] : 0;
         PipelineResult reference, resident;
         reference.collect_debug = resident.collect_debug = true;
-        const bool ok_reference = run_v3(a, b, reference);
+        const bool ok_reference = run_v4(a, b, reference);
         const bool ok_resident = run_v5(a, b, resident);
         bool same = ok_reference && ok_resident &&
                     reference.nKpA == resident.nKpA && reference.nKpB == resident.nKpB &&
@@ -211,7 +211,7 @@ bool cuda_selftest_v5() {
         const bool fewer_bytes =
             resident.times.h2d_bytes < reference.times.h2d_bytes &&
             resident.times.d2h_bytes < reference.times.d2h_bytes;
-        std::printf("V5 CUDA selftest %s (V3 vs V5: identical=%d, h2d bytes %.0f -> %.0f, "
+        std::printf("V5 CUDA selftest %s (V4 vs V5: identical=%d, h2d bytes %.0f -> %.0f, "
                     "d2h bytes %.0f -> %.0f)\n",
                     same && fewer_bytes ? "PASS" : "FAIL", same ? 1 : 0,
                     reference.times.h2d_bytes, resident.times.h2d_bytes,

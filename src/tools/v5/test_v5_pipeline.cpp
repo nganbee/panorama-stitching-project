@@ -4,8 +4,8 @@
 // External sources: none.
 //
 // No args: synthetic pairs and error cases. Two args: a real image pair.
-// V5 must reproduce V3 (its kernel baseline) bit for bit, stay within the
-// PLAN tolerances of V0, and copy fewer host<->device bytes than V1/V3.
+// V5 must reproduce V4 (its kernel baseline) bit for bit, stay within the
+// PLAN tolerances of V0, and copy fewer host<->device bytes than V1/V4.
 #include "../../core_headers/versions.h"
 #include "../../libraries/stb_image.h"
 #include <algorithm>
@@ -15,8 +15,8 @@
 #include <stdexcept>
 #include <string>
 
-#if !defined(PANORAMA_WITH_V5)
-#error "Build with -DPANORAMA_WITH_CUDA -DPANORAMA_WITH_V3 -DPANORAMA_WITH_V5"
+#if !defined(PANORAMA_WITH_V5) || !defined(PANORAMA_WITH_V4)
+#error "Build with -DPANORAMA_WITH_CUDA -DPANORAMA_WITH_V2 -DPANORAMA_WITH_V3 -DPANORAMA_WITH_V4 -DPANORAMA_WITH_V5"
 #endif
 
 namespace {
@@ -77,25 +77,25 @@ void compare_plan(const PipelineResult& ref, const PipelineResult& gpu, const Im
     }
     std::printf("  panorama MAE vs V0=%.9f\n", mae / ref.panorama.data.size());
 }
-// V5 changes only the data path, so it must equal V3 exactly.
-void compare_exact(const PipelineResult& v3, const PipelineResult& v5) {
-    require(v3.nKpA == v5.nKpA && v3.nKpB == v5.nKpB && v3.nMatches == v5.nMatches &&
-            v3.nInliers == v5.nInliers, "V3/V5 counts differ");
+// V5 changes only the data path, so it must equal V4 exactly.
+void compare_exact(const PipelineResult& v4, const PipelineResult& v5) {
+    require(v4.nKpA == v5.nKpA && v4.nKpB == v5.nKpB && v4.nMatches == v5.nMatches &&
+            v4.nInliers == v5.nInliers, "V4/V5 counts differ");
     for (int side = 0; side < 2; ++side) {
-        const auto& a = side ? v3.keypointsB : v3.keypointsA;
+        const auto& a = side ? v4.keypointsB : v4.keypointsA;
         const auto& g = side ? v5.keypointsB : v5.keypointsA;
-        require(a.size() == g.size(), "V3/V5 keypoint buffers differ");
+        require(a.size() == g.size(), "V4/V5 keypoint buffers differ");
         for (size_t i = 0; i < a.size(); ++i)
             require(a[i].x == g[i].x && a[i].y == g[i].y && a[i].score == g[i].score,
-                    "V3/V5 keypoints differ");
+                    "V4/V5 keypoints differ");
     }
-    require(v3.matches.size() == v5.matches.size(), "V3/V5 match buffers differ");
-    for (size_t i = 0; i < v3.matches.size(); ++i)
-        require(v3.matches[i].idxA == v5.matches[i].idxA && v3.matches[i].idxB == v5.matches[i].idxB &&
-                v3.matches[i].dist == v5.matches[i].dist, "V3/V5 matches differ");
-    for (int i = 0; i < 9; ++i) require(v3.H.h[i] == v5.H.h[i], "V3/V5 homographies differ");
-    require(v3.panorama.w == v5.panorama.w && v3.panorama.h == v5.panorama.h &&
-            v3.panorama.data == v5.panorama.data, "V3/V5 panorama bytes differ");
+    require(v4.matches.size() == v5.matches.size(), "V4/V5 match buffers differ");
+    for (size_t i = 0; i < v4.matches.size(); ++i)
+        require(v4.matches[i].idxA == v5.matches[i].idxA && v4.matches[i].idxB == v5.matches[i].idxB &&
+                v4.matches[i].dist == v5.matches[i].dist, "V4/V5 matches differ");
+    for (int i = 0; i < 9; ++i) require(v4.H.h[i] == v5.H.h[i], "V4/V5 homographies differ");
+    require(v4.panorama.w == v5.panorama.w && v4.panorama.h == v5.panorama.h &&
+            v4.panorama.data == v5.panorama.data, "V4/V5 panorama bytes differ");
 }
 void check_timing(const StageTimes& t) {
     const double stages = t.gray + t.blur + t.harris + t.nms_topk + t.describe + t.match + t.ransac + t.warp_blend;
@@ -104,32 +104,32 @@ void check_timing(const StageTimes& t) {
     require(std::fabs(stages - t.kernel_total) <= 1e-5 * std::max(1.0, stages), "V5 kernel timing sum differs");
 }
 void check_pair(const Image& a, const Image& b) {
-    PipelineResult cpu, v1, v3, v5;
-    cpu.collect_debug = v1.collect_debug = v3.collect_debug = v5.collect_debug = true;
+    PipelineResult cpu, v1, v4, v5;
+    cpu.collect_debug = v1.collect_debug = v4.collect_debug = v5.collect_debug = true;
     require(run_v0(a, b, cpu), "V0 failed; panorama parity NOT verified");
     require(run_v1(a, b, v1), "V1 pipeline failed");
-    require(run_v3(a, b, v3), "V3 pipeline failed");
+    require(run_v4(a, b, v4), "V4 pipeline failed");
     require(run_v5(a, b, v5), "V5 pipeline failed");
     compare_plan(cpu, v5, b);
-    compare_exact(v3, v5);
+    compare_exact(v4, v5);
     check_timing(v5.times);
     // Only the two RGB inputs go up; only metadata and the panorama come back.
     const double input_bytes = static_cast<double>(a.data.size() + b.data.size());
     require(v5.times.h2d_bytes == input_bytes, "V5 uploads more than the two input images");
-    require(v5.times.h2d_bytes < v1.times.h2d_bytes && v5.times.h2d_bytes < v3.times.h2d_bytes,
+    require(v5.times.h2d_bytes < v1.times.h2d_bytes && v5.times.h2d_bytes < v4.times.h2d_bytes,
             "V5 does not reduce H2D bytes");
-    require(v5.times.d2h_bytes < v1.times.d2h_bytes && v5.times.d2h_bytes < v3.times.d2h_bytes,
+    require(v5.times.d2h_bytes < v1.times.d2h_bytes && v5.times.d2h_bytes < v4.times.d2h_bytes,
             "V5 does not reduce D2H bytes");
     require(v5.times.d2h_bytes >= static_cast<double>(v5.panorama.data.size()),
             "V5 D2H bytes smaller than the panorama");
-    std::printf("PASS: V5 vs V0/V3 (%dx%d + %dx%d, matches=%d inliers=%d)\n",
+    std::printf("PASS: V5 vs V0/V4 (%dx%d + %dx%d, matches=%d inliers=%d)\n",
                 a.w, a.h, b.w, b.h, v5.nMatches, v5.nInliers);
-    std::printf("  bytes H2D V1=%.0f V3=%.0f V5=%.0f | D2H V1=%.0f V3=%.0f V5=%.0f\n",
-                v1.times.h2d_bytes, v3.times.h2d_bytes, v5.times.h2d_bytes,
-                v1.times.d2h_bytes, v3.times.d2h_bytes, v5.times.d2h_bytes);
-    std::printf("  ms H2D V3=%.3f V5=%.3f | D2H V3=%.3f V5=%.3f | E2E V3=%.3f V5=%.3f\n",
-                v3.times.h2d, v5.times.h2d, v3.times.d2h, v5.times.d2h,
-                v3.times.end_to_end, v5.times.end_to_end);
+    std::printf("  bytes H2D V1=%.0f V4=%.0f V5=%.0f | D2H V1=%.0f V4=%.0f V5=%.0f\n",
+                v1.times.h2d_bytes, v4.times.h2d_bytes, v5.times.h2d_bytes,
+                v1.times.d2h_bytes, v4.times.d2h_bytes, v5.times.d2h_bytes);
+    std::printf("  ms H2D V4=%.3f V5=%.3f | D2H V4=%.3f V5=%.3f | E2E V4=%.3f V5=%.3f\n",
+                v4.times.h2d, v5.times.h2d, v4.times.d2h, v5.times.d2h,
+                v4.times.end_to_end, v5.times.end_to_end);
 }
 } // namespace
 

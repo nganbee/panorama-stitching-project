@@ -4,8 +4,8 @@
 // External sources: none.
 //
 // V5 changes only the data path. Every function below launches the same
-// kernels as the V1 stages (S1-S5) and the V3 texture S6, but takes and returns
-// device pointers instead of host vectors. Intermediate images, keypoints,
+// kernels as V4 (V1 S1-S3/S5, V2 S4 tiling, V3 S6 compressed crop, V4 S6 warp),
+// but takes and returns device pointers instead of host vectors. Intermediate images, keypoints,
 // descriptors, matches and the homography never leave the GPU. Only the input
 // RGB images go host->device, and only metadata needed for control (counts,
 // status flags, canvas size, crop rectangle) plus the final panorama go
@@ -43,7 +43,7 @@ int nms_topk(const float* response, int w, int h, Keypoint* keypoints);
 bool describe(const float* blurred, int w, int h, const Keypoint* keypoints, int n,
               Descriptor* descriptors);
 
-// S4: Hamming matching, ratio test, cross-check and ordered compaction.
+// S4: V2 shared-memory descriptor tiling, ratio test, cross-check and ordered compaction.
 // `matches` is device memory with capacity na. Returns the match count; only
 // that count is copied back.
 int match(const Descriptor* a, int na, const Descriptor* b, int nb, Match* matches);
@@ -54,7 +54,7 @@ bool ransac_homography(const Keypoint* kpA, int na, const Keypoint* kpB, int nb,
                        const Match* matches, int n,
                        V5HomographyResult* device_result, V5HomographyResult& host_result);
 
-// S6 (V3 texture variant): reads A/B from the device buffers uploaded for S1
+// S6 (V4 warp + V3 compressed crop): reads A/B from the device buffers uploaded for S1
 // and H from the device S5 result. Only canvas metadata, the crop rectangle and
 // the cropped panorama are copied to the host.
 void warp_blend(const uint8_t* A, int Aw, int Ah, const uint8_t* B, int Bw, int Bh,
