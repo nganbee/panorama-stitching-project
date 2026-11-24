@@ -1,5 +1,287 @@
 # Panorama stitching project
 
+## V4 — Gaussian blur shared-memory tile + halo
+
+Mở `test_v4.ipynb` trên Colab GPU, sau khi push source lên branch `v4`.
+Notebook build một CLI chạy V0/V1/V2/V3/V4, test blur và full pipeline, sanitizer,
+benchmark đủ 12 case (720p/1080p/4K), xuất JSON/CSV, bảng bottleneck và biểu đồ
+speedup blur/end-to-end. CLI chạy một warm-up rồi ít nhất 5 lần đo.
+
+V4 kế thừa đúng V3 đã merge, chỉ đổi hai pass Gaussian sang shared-memory
+tile 16×16 có halo bán kính 4. Giữ hệ số, clamp biên, precision, transfers,
+allocation và S2–S6. `run_v3` và `run_v4` dùng cùng orchestration, khác callback
+blur; cả V3 và V4 dùng V2 S4 đã tích hợp. CLI bật V4 bằng cả bốn macro
+`PANORAMA_WITH_CUDA`, `PANORAMA_WITH_V2`, `PANORAMA_WITH_V3`, `PANORAMA_WITH_V4`.
+
+Source mới: `src/stage_implementations/v4_stage1.cu`,
+`src/cuda/v4_pipeline.cu`; test và benchmark ở `src/tools/v4/`.
+Notebook có danh sách source/flags đầy đủ để build. Sau khi build:
+
+```bash
+./build/stitch_v4 --list-versions
+./build/stitch_v4 --selftest --version 4
+./build/test_v4_blur
+./build/test_v4_pipeline
+python src/tools/v4/benchmark_v4.py --runs 5
+```
+
+Kết quả nằm trong thư mục mới `out/v4_<timestamp>/`, gồm environment, logs,
+panorama, JSON mỗi case/version và summary CSV/JSON. Thêm `--reverse-order`
+khi đo sweep thứ hai để kiểm tra ảnh hưởng thứ tự V3/V4. Có thể thử tile 32×8
+hoặc 32×16 qua `PANORAMA_V4_TILE_X/Y` trong cell build, rồi chạy lại parity.
+Chưa có số đo CUDA được xác nhận ở máy local; cần lưu output Colab và profiler
+V3/V4 trước khi kết luận tối ưu có lợi. Không xem tool sanitizer/profiler thiếu
+là PASS. Nội dung V1 cũ phía dưới có thể phản ánh các milestone trước;
+source và `docs/pipeline/v1_pipeline.md` mô tả V1 hiện tại (S5 đã chạy GPU).
+
+## Chạy project trên Google Colab
+
+### 1. Bật GPU runtime
+
+Trong Colab chọn:
+
+```text
+Runtime -> Change runtime type -> Hardware accelerator -> T4 GPU
+```
+
+Sau đó kiểm tra GPU và CUDA:
+
+```python
+!nvidia-smi
+!nvcc --version
+```
+
+### 2. Clone repository và chuyển sang branch V1
+
+```python
+!git clone https://github.com/nganbee/panorama-stitching-project.git
+%cd panorama-stitching-project
+!git checkout v1
+!mkdir -p build out reports
+```
+
+Nếu repository đã được clone ở cell trước đó, chỉ cần chạy:
+
+```python
+%cd /content/panorama-stitching-project
+!git pull origin v1
+```
+
+### 3. Build và chạy V0 CPU reference
+
+V0 dùng để kiểm tra correctness và làm baseline thời gian cho V1:
+
+```python
+!g++ -O2 -std=c++17 \
+  -Isrc/core_headers -Isrc/libraries \
+  src/integration/main.cpp \
+  src/integration/v0_pipeline.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v0_stage5.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/libraries/stb_impl.cpp \
+  -o build/stitch
+```
+
+Chạy thử với cặp ảnh 720p:
+
+```python
+!build/stitch \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg \
+  out/panorama_v0_location1_720p.png \
+  --version 0 --runs 5 \
+  --json reports/v0_location1_720p.json
+```
+
+Hiển thị panorama trong Colab:
+
+```python
+from IPython.display import Image, display
+display(Image(filename="out/panorama_v0_location1_720p.png"))
+```
+
+### 4. Chạy self-test S1–S2 CUDA của V1
+
+Milestone 1 kiểm tra grayscale, Gaussian blur, Harris response, NMS và
+top-K của V1 so với V0:
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage12_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  -o build/stage12_cuda_selftest
+
+!build/stage12_cuda_selftest
+```
+
+Kiểm tra thêm lỗi memory access bằng Compute Sanitizer:
+
+```python
+!compute-sanitizer build/stage12_cuda_selftest
+```
+
+Kết quả thành công cần có:
+
+```text
+S1/S2 CUDA parity tests passed
+```
+
+### 5. Chạy self-test S3–S4 CUDA
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage34_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v1_stage34.cu \
+  -o build/stage34_cuda_selftest
+
+!build/stage34_cuda_selftest
+```
+
+Kết quả thành công cần có:
+
+```text
+S3/S4 CUDA parity tests passed
+```
+
+### 6. Chạy self-test S6 CUDA
+
+```python
+!nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/test_v1_stage6.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/stage_implementations/v1_stage6.cu \
+  -o build/test_v1_stage6
+
+!build/test_v1_stage6
+```
+
+Kết quả thành công cần có dòng:
+
+```text
+Result: ALL PASS
+```
+
+### 7. Đo timing V0 của S1–S2
+
+Timing harness thực hiện một warm-up và trung bình ít nhất năm lần chạy ở
+720p, 1080p và 4K:
+
+```python
+!g++ -O2 -std=c++17 -Isrc/core_headers -Isrc/libraries \
+  tools/timing_stage12.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/libraries/stb_impl.cpp \
+  -o build/timing_stage12
+
+!build/timing_stage12 5 \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg
+```
+
+### Build và chạy full V1 pipeline
+
+Milestone 2 kết nối S1–S4 và S6 CUDA với S5 CPU V0. Stage timings của V1 là
+wall-clock time của từng synchronous host-buffer wrapper, nên vẫn bao gồm
+allocation và H2D/D2H của stage tương ứng. Đây là baseline correctness; V2 sẽ
+giữ buffer trên device và tách kernel/transfer timing.
+
+```python
+!nvcc -O2 -std=c++17 -DPANORAMA_WITH_CUDA \
+  -Isrc/core_headers -Isrc/libraries \
+  src/integration/main.cpp \
+  src/integration/v0_pipeline.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v0_stage34.cpp \
+  src/stage_implementations/v0_stage5.cpp \
+  src/stage_implementations/v0_stage6.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  src/stage_implementations/v1_stage34.cu \
+  src/stage_implementations/v1_stage6.cu \
+  src/cuda/cuda_pipeline.cu \
+  src/libraries/stb_impl.cpp \
+  -o build/stitch_cuda
+```
+
+```python
+!build/stitch_cuda \
+  dataset/location1/small_720p/1.jpg \
+  dataset/location1/small_720p/2.jpg \
+  out/panorama_v1_location1_720p.png \
+  --version 1 --runs 5 \
+  --json reports/v1_location1_720p.json
+```
+
+Self-test smoke của pipeline CUDA:
+
+```python
+!build/stitch_cuda --selftest --version 1
+```
+
+Toàn bộ quy trình Colab được đóng gói trong notebook `test_v1.ipynb`. Sau khi
+full V1 được build, chạy thêm cell build/run V1 trong notebook để so sánh với
+output V0 cùng dataset.
+
+## V1 CUDA S1-S4 (basic stage baselines)
+
+The basic GPU implementation of S1-S2 lives in
+`src/stage_implementations/v1_stage12.cu`, with blocking host-buffer
+interfaces in `src/core_headers/v1_stages.h`. Grayscale, both Gaussian blur
+passes, Sobel/tensor construction, Harris response, and NMS run on the GPU.
+For this first V1 milestone, deterministic top-K selection remains on the
+host after the GPU NMS candidate list is copied back. Shared-memory tiling,
+kernel fusion, device-side top-K, and persistent workspaces are reserved for
+later versions.
+
+Build and run the S1-S2 parity test on a machine with the CUDA toolkit and GPU:
+
+```bash
+nvcc -O2 -std=c++17 -Isrc/core_headers \
+  tools/run_stage12_cuda_selftest.cpp \
+  src/stage_implementations/v0_stage12.cpp \
+  src/stage_implementations/v1_stage12.cu \
+  -o stage12_cuda_selftest
+./stage12_cuda_selftest
+compute-sanitizer ./stage12_cuda_selftest
+```
+
+The test compares V1 against V0 for grayscale, blur, Harris response, and
+keypoint count/order on deterministic random and constant images.
+
+## V1 CUDA S3-S4 (global-memory baseline)
+
+The independent GPU implementation lives in
+`src/stage_implementations/v1_stage34.cu`, with interfaces in
+`src/core_headers/v1_stages.h`. Call `v1_describe` for each blurred image
+and its keypoints, then `v1_match` on the two descriptor vectors. The host
+wrappers allocate buffers, copy data, and launch kernels. BRIEF pattern
+generation, descriptor calculation, nearest-neighbour searches, ratio test,
+mutual cross-check, and ordered match compaction all run on the GPU.
+CUDA errors throw exceptions; there is no CPU fallback.
+
+The S3-S4 wrappers are synchronous host-buffer interfaces. They are now
+connected to the full V1 pipeline through `src/cuda/cuda_pipeline.cu`; S5
+still uses the V0 CPU RANSAC implementation in this milestone, while S6 uses
+its CUDA implementation. Wall-clock stage measurements include allocation and
+host/device transfers, not just kernels. Compaction deliberately uses one GPU
+thread for this simple baseline.
+
+Build and run the parity test on a machine with the CUDA toolkit and GPU
+(the CPU functions here are used only as a test oracle):
+
+```bash
+nvcc -O2 -std=c++17 tools/run_stage34_cuda_selftest.cpp src/stage_implementations/v0_stage34.cpp src/stage_implementations/v1_stage34.cu -o stage34_cuda_selftest
+./stage34_cuda_selftest
+compute-sanitizer ./stage34_cuda_selftest
+```
+
+The test checks all descriptor bits and ordered match fields against V0,
+including borders, fractional coordinates, invalid keypoints, empty inputs,
+single candidates, duplicate descriptors, and unequal descriptor counts.
+
 ## V0 build
 
 The V0 implementation is a single-threaded C++17 pipeline. From the project root:

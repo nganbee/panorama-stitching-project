@@ -1,8 +1,8 @@
-// File: tools/debug_keypoints.cpp
+// File: src/tools/v0/debug_keypoints.cpp
 // Description: Debug tool for Stage 1-2 on real images (NOT part of the submitted build).
 //              Runs gray -> blur -> Harris -> NMS/top-K on both images, saves gray/blur/keypoint
 //              overlays and prints keypoint counts, overlap-strip counts and per-stage timings.
-//              Build: g++ -O2 -std=c++17 -I src tools/debug_keypoints.cpp src/stage_implementations/v0_stage12.cpp src/libraries/stb_impl.cpp -o dbg
+//              Build: g++ -O2 -std=c++17 -Isrc/core_headers -Isrc/libraries src/tools/v0/debug_keypoints.cpp src/stage_implementations/v0_stage12.cpp src/libraries/stb_impl.cpp -o dbg
 //              Run:   ./dbg data/left.png data/right.png [out_prefix]
 // External sources: stb_image / stb_image_write
 #include "common.h"

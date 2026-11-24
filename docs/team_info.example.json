@@ -1,0 +1,13 @@
+{
+  "group": "08",
+  "members": [
+    {"nickname": "Thịnh", "name": "", "student_id": "", "responsibility": "S1-S2; methods; slides"},
+    {"nickname": "Khánh", "name": "", "student_id": "", "responsibility": "S3-S4; references; failure case"},
+    {"nickname": "Thụ", "name": "", "student_id": "", "responsibility": "S5; correctness; profiling; GPU plan"},
+    {"nickname": "Ngân", "name": "", "student_id": "", "responsibility": "S6; integration; dataset; notebook; packaging"}
+  ],
+  "source_authors_confirmed": false,
+  "ai_declaration": "",
+  "dataset_quality_notes": "",
+  "failure_case_analysis": ""
+}

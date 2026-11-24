@@ -38,7 +38,19 @@ inline void write_parameters_json(std::ostream& o) {
       << ",\"kRansacSeed\":" << params::kRansacSeed
       << ",\"available_versions\":[0";
 #ifdef PANORAMA_WITH_CUDA
-    o << ",1,2,3";
+    o << ",1";
+#ifdef PANORAMA_WITH_V2
+    o << ",2";
+#endif
+#ifdef PANORAMA_WITH_V3
+    o << ",3";
+#endif
+#ifdef PANORAMA_WITH_V4
+    o << ",4";
+#endif
+#ifdef PANORAMA_WITH_V5
+    o << ",5";
+#endif
 #endif
     o << "]}\n";
 }
@@ -65,6 +77,7 @@ inline void write_metrics_json(std::ostream& o, int version, int runs,
       << ",\"ransac\":" << t.ransac << ",\"warp_blend\":" << t.warp_blend
       << ",\"h2d\":" << t.h2d << ",\"d2h\":" << t.d2h
       << ",\"kernel_total\":" << t.kernel_total << ",\"end_to_end\":" << t.end_to_end << '}'
+      << ",\"transfer_bytes\":{\"h2d\":" << t.h2d_bytes << ",\"d2h\":" << t.d2h_bytes << '}'
       << ",\"stage_timings_ms\":{\"S1\":" << t.gray+t.blur
       << ",\"S2\":" << t.harris+t.nms_topk << ",\"S3\":" << t.describe
       << ",\"S4\":" << t.match << ",\"S5\":" << t.ransac
