@@ -1,7 +1,7 @@
 // Authors: Team 8; V2 coverage assisted by OpenAI Codex.
 // External sources: none.
 // Integration parity + timing contract. Link the full V0/V1 pipeline sources.
-#include "../../src/core_headers/versions.h"
+#include "../../core_headers/versions.h"
 #include "verify_helpers.h"
 #include <algorithm>
 #include <cmath>

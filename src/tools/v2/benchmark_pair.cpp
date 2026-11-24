@@ -1,8 +1,8 @@
 // Authors: Nguyen Duy Khanh; benchmark assisted by OpenAI Codex.
 // External sources: none. Uses production pipelines; all I/O outside timing.
-#include "../../src/core_headers/report_io.h"
-#include "../../src/libraries/stb_image.h"
-#include "../../src/libraries/stb_image_write.h"
+#include "../../core_headers/report_io.h"
+#include "../../libraries/stb_image.h"
+#include "../../libraries/stb_image_write.h"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>

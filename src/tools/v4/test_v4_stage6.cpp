@@ -56,6 +56,8 @@ void check_warp(const Image& A, const Image& B, const Homography& H, const char*
     v0_warp_blend(A, B, H, cpu);
     v3_warp_blend(A, B, H, v3);
     v4_warp_blend(A, B, H, v4);
+    require(valid_rgb_image(cpu) && valid_rgb_image(v3) && valid_rgb_image(v4),
+            "Positive S6 case returned an empty image; parity is NOT verified");
     compare_pano(cpu, v4, label);
     compare_pano(v3, v4, label);
 }

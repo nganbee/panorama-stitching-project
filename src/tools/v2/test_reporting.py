@@ -1,6 +1,6 @@
 """Authors: Team 8; assisted by OpenAI Codex. External sources: none.
 Development tests only; not part of the submitted experiment workflow.
-Run: python -m unittest discover -s tools/v2 -p test_reporting.py
+Run: python -m unittest discover -s src/tools/v2 -p test_reporting.py
 """
 import tempfile
 import unittest

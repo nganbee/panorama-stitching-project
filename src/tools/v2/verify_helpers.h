@@ -1,7 +1,7 @@
 // Authors: Team 8; V2 verification assisted by OpenAI Codex.
 // External sources: none. Acceptance criteria from docs/PLAN.md.
 #pragma once
-#include "../../src/core_headers/common.h"
+#include "../../core_headers/common.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>

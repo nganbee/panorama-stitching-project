@@ -1,8 +1,8 @@
 // Authors: Nguyen Duy Khanh; V2 coverage assisted by OpenAI Codex.
 // External sources: none. Compare both CUDA matchers against V0.
-#include "../../src/core_headers/v0_stages.h"
-#include "../../src/core_headers/v1_stages.h"
-#include "../../src/core_headers/v2_stages.h"
+#include "../../core_headers/v0_stages.h"
+#include "../../core_headers/v1_stages.h"
+#include "../../core_headers/v2_stages.h"
 #include <iostream>
 #include <random>
 #include <stdexcept>

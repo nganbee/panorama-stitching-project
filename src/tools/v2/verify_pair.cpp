@@ -1,11 +1,11 @@
 // Authors: Nguyen Duy Khanh; verification assisted by OpenAI Codex.
 // External sources: none. Untimed S4 and full-pipeline result verification.
-#include "../../src/core_headers/versions.h"
-#include "../../src/core_headers/v0_stages.h"
-#include "../../src/core_headers/v1_stages.h"
-#include "../../src/core_headers/v2_stages.h"
-#include "../../src/core_headers/report_io.h"
-#include "../../src/libraries/stb_image.h"
+#include "../../core_headers/versions.h"
+#include "../../core_headers/v0_stages.h"
+#include "../../core_headers/v1_stages.h"
+#include "../../core_headers/v2_stages.h"
+#include "../../core_headers/report_io.h"
+#include "../../libraries/stb_image.h"
 #include "verify_helpers.h"
 #include <fstream>
 #include <iostream>

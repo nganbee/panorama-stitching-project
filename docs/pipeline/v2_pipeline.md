@@ -47,15 +47,15 @@ hashes or OS/session identity gates are added to the V2 experiment.
 | `src/stage_implementations/v2_stage4.cu` | Tiled S4 matcher |
 | `src/core_headers/v2_stages.h` | Matcher declaration |
 | `src/cuda/v2_pipeline.cu`, `.h` | Integrate S4 V2 with inherited V1 stages |
-| `tools/v2/build.sh` | Build all experiment binaries with common flags |
-| `tools/v2/test_matching.cpp` | Exact S4 parity, tile/tie/ratio/cross-check cases |
-| `tools/v2/test_pipeline.cpp` | Basic synthetic integration and direct V1/V2 comparison |
-| `tools/v2/verify_pair.cpp` | Same-input S4 and full-pipeline output verification on real pairs |
-| `tools/v2/verify_helpers.h` | Ordered comparison and homography projection error |
-| `tools/v2/benchmark_pair.cpp` | Warm-up, timed production pipeline runs, samples/mean and panorama |
-| `tools/v2/benchmark.py` | Run 12 cases, preserve failures, generate timing/minimum/speedup tables |
-| `tools/v2/profile.py` | Collect actual Nsight evidence separately from benchmark timing |
-| `tools/v2/test_reporting.py` | Development tests for report correctness, outside notebook workflow |
+| `src/tools/v2/build.sh` | Build all experiment binaries with common flags |
+| `src/tools/v2/test_matching.cpp` | Exact S4 parity, tile/tie/ratio/cross-check cases |
+| `src/tools/v2/test_pipeline.cpp` | Basic synthetic integration and direct V1/V2 comparison |
+| `src/tools/v2/verify_pair.cpp` | Same-input S4 and full-pipeline output verification on real pairs |
+| `src/tools/v2/verify_helpers.h` | Ordered comparison and homography projection error |
+| `src/tools/v2/benchmark_pair.cpp` | Warm-up, timed production pipeline runs, samples/mean and panorama |
+| `src/tools/v2/benchmark.py` | Run 12 cases, preserve failures, generate timing/minimum/speedup tables |
+| `src/tools/v2/profile.py` | Collect actual Nsight evidence separately from benchmark timing |
+| `src/tools/v2/test_reporting.py` | Development tests for report correctness, outside notebook workflow |
 
 ## Verification
 
@@ -81,12 +81,12 @@ Use the latest complete V2 checkout, then run `test_v2.ipynb` top to bottom.
 Equivalent commands from the repository root:
 
 ```bash
-bash tools/v2/build.sh
+bash src/tools/v2/build.sh
 build/stage34_v2_selftest
 build/test_v2_pipeline
-python tools/v2/benchmark.py --phase baseline --run-dir reports/v2_benchmark/run01
-python tools/v2/profile.py --run-dir reports/v2_benchmark/run01 --version 1
-python tools/v2/benchmark.py --phase optimized --run-dir reports/v2_benchmark/run01
+python src/tools/v2/benchmark.py --phase baseline --run-dir reports/v2_benchmark/run01
+python src/tools/v2/profile.py --run-dir reports/v2_benchmark/run01 --version 1
+python src/tools/v2/benchmark.py --phase optimized --run-dir reports/v2_benchmark/run01
 ```
 
 Use a fresh result directory and keep the same Colab GPU session for all versions.
@@ -103,7 +103,7 @@ panoramas and profiler reports. Analysis must reference actual cell outputs.
 ## Local checks and references
 
 ```bash
-python -m unittest discover -s tools/v2 -p test_reporting.py
+python -m unittest discover -s src/tools/v2 -p test_reporting.py
 ```
 
 Host tests verify reporting only. CUDA build, parity and performance require GPU
