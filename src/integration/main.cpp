@@ -184,8 +184,10 @@ void print_usage(const char* program) {
         "Usage: %s <left_image> <right_image> <output_image> "
         "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
         "       %s --dump-params | --list-versions | --help\n"
-#if defined(PANORAMA_WITH_V3) && defined(PANORAMA_WITH_V5)
-        "       %s --selftest --version N (CUDA build, N=1, 3 or 5)\n", program, program, program);
+#if defined(PANORAMA_WITH_V5)
+        "       %s --selftest --version N (CUDA build, N=1..5)\n", program, program, program);
+#elif defined(PANORAMA_WITH_V4)
+        "       %s --selftest --version N (CUDA build, N=1, 3 or 4)\n", program, program, program);
 #elif defined(PANORAMA_WITH_V3)
         "       %s --selftest --version N (CUDA build, N=1 or 3)\n", program, program, program);
 #else
@@ -208,18 +210,19 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::strcmp(argv[1], "--selftest") == 0 &&
         std::strcmp(argv[2], "--version") == 0) {
         int version = -1;
-#if defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3) && defined(PANORAMA_WITH_V5)
-        if (!parse_int(argv[3], version) || (version != 1 && version != 3 && version != 5)) return 2;
+#if defined(PANORAMA_WITH_CUDA)
+        if (!parse_int(argv[3], version)) return 2;
+        if (version == 1) return cuda_selftest(version) ? 0 : 1;
+#ifdef PANORAMA_WITH_V3
         if (version == 3) return cuda_selftest_v3() ? 0 : 1;
-        if (version == 5) return cuda_selftest_v5() ? 0 : 1;
-#elif defined(PANORAMA_WITH_CUDA) && defined(PANORAMA_WITH_V3)
-        if (!parse_int(argv[3], version) || (version != 1 && version != 3)) return 2;
-        if (version == 3) return cuda_selftest_v3() ? 0 : 1;
-#else
-        if (!parse_int(argv[3], version) || version != 1) return 2;
 #endif
-#ifdef PANORAMA_WITH_CUDA
-        return cuda_selftest(version) ? 0 : 1;
+#ifdef PANORAMA_WITH_V4
+        if (version == 4) return cuda_selftest_v4() ? 0 : 1;
+#endif
+#ifdef PANORAMA_WITH_V5
+        if (version == 5) return cuda_selftest_v5() ? 0 : 1;
+#endif
+        return 2;
 #else
         std::fprintf(stderr, "CUDA selftests require a --cuda build. CPU tests are separate binaries.\n");
         return 2;
