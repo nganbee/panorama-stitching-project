@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--output", default=None)
     parser.add_argument("--reverse-order", action="store_true",
-                        help="Second sweep: measure V4 before V3 to assess run-order bias")
+                        help="Second sweep: flip each case's V3/V4 order to assess run-order bias")
     args = parser.parse_args()
     if args.runs < 5:
         parser.error("--runs must be >=5")
@@ -42,6 +42,7 @@ def main():
                 "baseline": "merged V3 (V2 shared-memory S4; V3 S6)", "argv": sys.argv}
     for key, command in {"commit": ["git", "rev-parse", "HEAD"],
                          "worktree": ["git", "status", "--short"],
+                         "gpu_identity": ["nvidia-smi", "--query-gpu=name,uuid,driver_version", "--format=csv,noheader"],
                          "gpu": ["nvidia-smi"], "nvcc": ["nvcc", "--version"]}.items():
         try:
             result = subprocess.run(command, text=True, capture_output=True)
@@ -51,7 +52,18 @@ def main():
     (root / "environment.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print("Reports:", root.resolve(), flush=True)
     rows = []
-    for location in ("location1", "location2", "location3", "challenge"):
+    timing_rows = []
+
+    def save_progress():
+        (root / "summary.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        for filename, records in (("summary.csv", rows), ("timings.csv", timing_rows)):
+            if not records:
+                continue
+            with (root / filename).open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(key for record in records for key in record)))
+                writer.writeheader()
+                writer.writerows(records)
+    for scene_index, location in enumerate(("location1", "location2", "location3", "challenge")):
         for label, folder in (("720p", "small_720p"), ("1080p", "medium_1080p"), ("4k", "large_4k")):
             case = f"{location}_{label}"
             left, right = (Path("dataset") / location / folder / f"{i}.jpg" for i in (1, 2))
@@ -60,12 +72,18 @@ def main():
             if not left.is_file() or not right.is_file():
                 row["error"] = "Missing dataset pair"
                 rows.append(row)
+                save_progress()
                 continue
             ok = execute([parity, left, right], root / f"{case}_parity.log") == 0
             row["parity"] = "pass" if ok else "failed"
             reports = {}
-            # Use --reverse-order on a second sweep to assess thermal/order bias.
-            for version in ((0, 4, 3) if args.reverse_order else (0, 3, 4)):
+            # Alternate by scene; a reverse sweep flips every V3/V4 pair.
+            reverse = bool(scene_index % 2) ^ args.reverse_order
+            order = (0, 4, 3) if reverse else (0, 3, 4)
+            row["measurement_order"] = "/".join(map(str, order))
+            for version in order:
+                print("GPU:", metadata.get("gpu_identity", "unknown").strip(),
+                      "case:", case, "version:", version, flush=True)
                 report_path = root / f"{case}_v{version}.json"
                 code = execute([binary, left, right, root / f"{case}_v{version}.png",
                                 "--version", version, "--runs", args.runs, "--json", report_path],
@@ -73,16 +91,31 @@ def main():
                 if code != 0 or not report_path.is_file():
                     ok = False
                     continue
-                report = json.loads(report_path.read_text(encoding="utf-8"))
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as error:
+                    ok = False
+                    row["error"] = f"Invalid V{version} report: {error}"
+                    continue
                 if (report.get("status") != "ok" or report.get("runs", 0) < 5 or
                         report.get("warmup_runs", 0) < 1):
                     ok = False
                     continue
                 reports[version] = report
-                for key in ("blur", "gray", "h2d", "d2h", "kernel_total", "end_to_end"):
-                    row[f"v{version}_{key}_ms"] = report["timings_ms"][key]
+                for key, ms in report["timings_ms"].items():
+                    row[f"v{version}_{key}_ms"] = ms
                 for stage, ms in report["stage_timings_ms"].items():
                     row[f"v{version}_{stage}_ms"] = ms
+                timing_rows.append({
+                    "case": case, "scene": location, "resolution": label,
+                    "version": version, "gpu": metadata.get("gpu_identity", "unknown").strip(),
+                    "status": report["status"], "parity": row["parity"],
+                    "runs": report["runs"], "warmup_runs": report["warmup_runs"],
+                    "measurement_order": row["measurement_order"],
+                    "report": str(report_path), **report["timings_ms"],
+                    **{f"stage_{key}": value for key, value in report["stage_timings_ms"].items()},
+                    **report.get("features", {}),
+                })
             if len(reports) == 3:
                 t3, t4 = reports[3]["timings_ms"], reports[4]["timings_ms"]
                 row["blur_speedup_v3_v4"] = t3["blur"] / t4["blur"] if t4["blur"] > 0 else None
@@ -98,12 +131,8 @@ def main():
                 row["error"] = "One or more CLI benchmarks failed; see case logs"
             rows.append(row)
             # Persist progress even if the Colab session disconnects later.
-            (root / "summary.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    (root / "summary.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    with (root / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
-        writer.writeheader()
-        writer.writerows(rows)
+            save_progress()
+    save_progress()
     print("\nSummary:", root / "summary.csv")
     return 0 if len(rows) == 12 and all(row["status"] == "ok" for row in rows) else 1
 
