@@ -13,6 +13,10 @@
 #error "V4 requires PANORAMA_WITH_CUDA and PANORAMA_WITH_V3"
 #endif
 
+#if defined(PANORAMA_WITH_V7) && (!defined(PANORAMA_WITH_CUDA) || !defined(PANORAMA_WITH_V5))
+#error "V7 requires PANORAMA_WITH_CUDA and PANORAMA_WITH_V5 (and V2-V4)"
+#endif
+
 // One full pipeline: left=A, right=B (B warped onto A's frame).
 // Returns false on failure (e.g., too few matches).
 using PipelineFn = bool (*)(const Image& A, const Image& B, PipelineResult& out);
@@ -31,6 +35,9 @@ bool run_v0(const Image& A, const Image& B, PipelineResult& out);
 #endif
 #ifdef PANORAMA_WITH_V5
 #include "../cuda/v5_pipeline.h"
+#endif
+#ifdef PANORAMA_WITH_V7
+#include "../cuda/v7_pipeline.h"
 #endif
 #endif
 
@@ -51,6 +58,9 @@ inline PipelineFn get_version(int v) {
 #endif
 #ifdef PANORAMA_WITH_V5
         case 5: return run_v5; // GPU data residency
+#endif
+#ifdef PANORAMA_WITH_V7
+        case 7: return run_v7; // S5 RANSAC: one warp per hypothesis (on top of V5)
 #endif
 #endif
         default: return nullptr;

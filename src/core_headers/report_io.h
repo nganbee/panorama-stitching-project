@@ -51,6 +51,9 @@ inline void write_parameters_json(std::ostream& o) {
 #ifdef PANORAMA_WITH_V5
     o << ",5";
 #endif
+#ifdef PANORAMA_WITH_V7
+    o << ",7";
+#endif
 #endif
     o << "]}\n";
 }
