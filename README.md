@@ -12,8 +12,9 @@
 | **V3** | S6 compressed monotonic-stack cho crop | `src/cuda/v3_pipeline.cu`, `src/stage_implementations/v3_stage6.cu` | `test_v3.ipynb` |
 | **V4** | Tối ưu S6 `warp_blend` | `src/cuda/v4_pipeline.cu`, `src/stage_implementations/v4_stage6.cu` | `test_v4_1.ipynb` |
 | **V5** | GPU Data Residency (giữ buffer trung gian trên GPU, kế thừa kernel V4) | `src/cuda/v5_pipeline.cu`, `src/stage_implementations/v5_stage4.cu`, `src/stage_implementations/v5_stage6.cu` | `test_v5.ipynb` |
+| **V6** | S4 một warp/query + shuffle top-2, kế thừa V5 | `src/cuda/v6_pipeline.cu`, `src/stage_implementations/v6_stage4.cu` | `test_v6.ipynb` |
 
-Lộ trình mở rộng tiếp theo (theo profiling V5) được ghi trong `docs/PLAN.md`: **V6** (tối ưu sâu `warp_blend` S6) và **V7** (S5 RANSAC).
+Lộ trình mở rộng tiếp theo (theo profiling V5) được ghi trong `docs/PLAN.md`: **V6** (S4 một warp/query, shared-memory tile và shuffle top-2) và **V7** (S5 RANSAC).
 
 ## Cấu trúc thư mục
 

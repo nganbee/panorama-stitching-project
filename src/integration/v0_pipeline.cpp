@@ -12,7 +12,7 @@
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
+using Clock = std::chrono::high_resolution_clock;
 
 inline double ms_since(Clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();

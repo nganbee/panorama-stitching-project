@@ -184,7 +184,9 @@ void print_usage(const char* program) {
         "Usage: %s <left_image> <right_image> <output_image> "
         "--version N [--runs N] [--debug-prefix PREFIX] [--json FILE]\n"
         "       %s --dump-params | --list-versions | --help\n"
-#if defined(PANORAMA_WITH_V5)
+#if defined(PANORAMA_WITH_V6)
+        "       %s --selftest --version N (CUDA build, N=1..6)\n", program, program, program);
+#elif defined(PANORAMA_WITH_V5)
         "       %s --selftest --version N (CUDA build, N=1..5)\n", program, program, program);
 #elif defined(PANORAMA_WITH_V4)
         "       %s --selftest --version N (CUDA build, N=1, 3 or 4)\n", program, program, program);
@@ -221,6 +223,9 @@ int main(int argc, char** argv) {
 #endif
 #ifdef PANORAMA_WITH_V5
         if (version == 5) return cuda_selftest_v5() ? 0 : 1;
+#endif
+#ifdef PANORAMA_WITH_V6
+        if (version == 6) return cuda_selftest_v6() ? 0 : 1;
 #endif
         return 2;
 #else

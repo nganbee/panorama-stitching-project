@@ -20,7 +20,7 @@ S4 và S6 chiếm nhiều thời gian ở một số case V0, nên là ứng vi�
 | **V3** | Optimized — S6 texture cache | Nếu profiling V2 xác nhận S6 còn là bottleneck: dùng texture cache để đọc pixel nguồn (point fetch), giữ bilinear thủ công, precision, feather và crop như V2. Ý chính chỉ là cách truy cập/cache ảnh nguồn. Kế thừa V2. |
 | **V4** | Optimized — S6 warp/blend | Profiling V3 cho thấy blur chỉ chiếm ~1.7% kernel còn S6 `warp_blend` chiếm ~64–73% kernel ở 4K: đóng gói `B` sang `uchar4` để đọc `__ldg`, chuyển nội suy bilinear + feather blending sang `float` (giữ chiếu ngược `double` 1 phép chia nghịch đảo) và dùng block `32×8` coalesced. Kế thừa V3. |
 | **V5** | Optimized — GPU data residency | Nếu H2D/D2H giữa các stage chiếm tỷ lệ đáng kể: giữ ảnh, keypoints, descriptors, matches và homography trung gian trên device, bỏ copy các buffer tính toán qua CPU giữa stage; chỉ truyền input/output và metadata cần cho điều phối. Giữ thuật toán/kernel tính toán, kế thừa V4. |
-| **V6** | Optimized — S6 `warp_blend` | Profiling V5 cho thấy S4 chỉ còn ~0.8% kernel, còn riêng `warp_blend_v5_kernel` ở S6 chiếm **44.1% tổng kernel** ở 4K (~30.1 ms): tập trung tối ưu `warp_blend` (xử lý theo vùng ROI/bỏ qua vùng rỗng, tăng occupancy/giảm áp lực thanh ghi và tối ưu truy cập bộ nhớ), giữ đúng valid mask, feather và crop V0/V5. Kế thừa V5. |
+| **V6** | Optimized — S4 warp/query | Từ timing/profiler V5 đánh giá chi phí S4; một warp cùng xử lý một query và shuffle reduction tìm top-2 Hamming distance. Giữ shared-memory tile 128 descriptor để bốn query trong block dùng chung; giữ ratio/cross-check/tie-break và device residency. Nếu tỷ trọng S4 nhỏ, ghi rõ giới hạn lợi ích end-to-end. |
 | **V7** | Optimized — S5 RANSAC (refine/sample/score) | Profiling V5/V6 cho thấy S5 RANSAC là bottleneck kernel kế tiếp (~25.2% kernel ở 4K: `refine_best` 13.3%, `generate_samples` 8.1%, `score_hypotheses` 3.8%; đứng #1 ở một số case 720p): song song hoá `refine_best` / `generate_samples` và dùng warp reduction cho `score_hypotheses`, giữ nguyên dãy mẫu, 2.000 vòng và ngưỡng của V0. Kế thừa V6. |
 
 Đây là thứ tự **dự kiến** dựa trên V0; trước khi chốt mỗi V2–V7 phải có timing của version trước chứng minh bottleneck liên quan. Nếu giả thuyết không đúng, thay ý tối ưu bằng bottleneck thực tế và ghi lý do. Version chậm hơn vẫn được giữ và phân tích; chỉ bỏ tối ưu trước đó khi notebook giải thích nguyên nhân. V2–V7 luôn phải qua kiểm tra kết quả so với V0.
@@ -55,10 +55,10 @@ S4 và S6 chiếm nhiều thời gian ở một số case V0, nên là ứng vi�
 - **Scope của owner:** từ timing và profiler của V4 xác nhận copy giữa các stage đáng kể; phụ trách giao diện device của S5 (matches/keypoints vào, homography ra), phối hợp Thịnh và Khánh nối S1–S4, Ngân nối S6; tích hợp trên V4 để các buffer tính toán trung gian ở lại GPU. Chỉ copy input/output và metadata cần cho điều phối; giữ thuật toán/kernel tính toán để tách tác động của residency, đo H2D/D2H và end-to-end.
 - **Mốc hoàn thành:** V5 chỉ đổi đường đi dữ liệu so với V4; kết quả nhất quán V0 và có số byte copy trước/sau.
 
-**V6 — Tối ưu sâu `warp_blend` ở S6. Owner: Khánh.**
+**V6 — S4 một warp/query. Owner: Khánh.**
 
-- **Scope của owner:** từ Nsight V5 xác nhận S4 chỉ còn ~0.8% kernel, trong khi riêng `warp_blend_v5_kernel` ở S6 vẫn chiếm **44.1% tổng kernel** ở 4K (~30.1 ms); tập trung tối ưu `warp_blend` (tính theo vùng ROI / loại bỏ phép chiếu ở vùng rỗng, tối ưu truy cập bộ nhớ và tăng occupancy/giảm register pressure). Giữ nguyên phần crop của V3, các stage S1–S5 và GPU data residency của V5; đo riêng `warp_blend`, S6 và end-to-end.
-- **Mốc hoàn thành:** V6 chỉ đổi kernel `warp_blend` ở S6 so với V5; kích thước crop khớp tuyệt đối và RGB sai lệch ≤1 mức so với V0/V5.
+- **Scope của owner:** từ timing V5 đánh giá S4 còn tốn thời gian; cho một warp cùng so sánh descriptor B với một query rồi dùng shuffle reduction tìm best/second-best. Giữ shared-memory tile 128 descriptor kế thừa V2 qua V5; giữ ratio test/cross-check/tie-break và GPU data residency; đo riêng S4 và end-to-end. Nếu S4 chỉ chiếm tỷ trọng nhỏ, ghi rõ giới hạn của tối ưu từ số đo thực tế, không tự kết luận đây là bottleneck lớn nhất.
+- **Mốc hoàn thành:** V6 chỉ đổi cách chia việc/tìm top-2 của S4 so với V5; matches và panorama nhất quán V0, khớp chính xác V5. Giữ cả case chậm và phân tích sau khi chạy GPU.
 
 **V7 — S5 RANSAC (song song hoá refine/sample + warp reduction). Owner: Thụ.**
 
@@ -79,7 +79,7 @@ S4 và S6 chiếm nhiều thời gian ở một số case V0, nên là ứng vi�
 | **V3 / Ngân** | Code song song V1 + S6 | V2 đã ghép và timing cho thấy S6 còn đáng tối ưu | Kernel S6 texture + số đo V3 trên nền V2 |
 | **V4 / Thịnh** | Code song song V1 + S6 warp | V3 đã ghép và profiling cho thấy S6 `warp_blend` chi phối (~64–73% kernel) | Kernel S6 warp tối ưu (`uchar4` `__ldg` + FP32 + `32×8`) + số đo V4 trên nền V3 |
 | **V5 / Thụ** | V1 + Thiết kế đường đi dữ liệu song song | V4 đã ghép và timing cho thấy copy trung gian đáng kể (~80–85% E2E ở 4K) | Pipeline giữ dữ liệu trên GPU + số byte copy và timing V5 |
-| **V6 / Khánh** | Có S6 `warp_blend` V5; thử trên nhánh riêng | V5 đã ghép, Nsight cho thấy S4 chỉ còn 0.8% còn riêng `warp_blend` vẫn chiếm 44.1% kernel | Kernel `warp_blend` tối ưu sâu (ROI / memory / occupancy) + số đo V6 trên nền V5 |
+| **V6 / Khánh** | Có matcher device-resident S4 V5; thử trên checkout riêng | V5 đã ghép, có timing/profiler S4 và kiểm chứng V0/V5 | Matcher warp/query + shuffle top-2, số đo S4 và end-to-end V6 trên nền V5 |
 | **V7 / Thụ** | Có S5 V1; thử trên nhánh riêng | V6 đã ghép, S5 RANSAC là bottleneck kernel lớn tiếp theo (~25.2% kernel ở V5 4K) | Kernel S5 tối ưu (`refine_best` / `generate_samples` / `score_hypotheses`) + số đo V7 trên nền V6 |
 
 Ưu tiên **ghép, kiểm tra và báo cáo** V1 → V2 → V3 để đạt số version tối thiểu; nếu thực hiện phần mở rộng thì tiếp tục V4 → V5 → V6 → V7. Khi ghép một nhánh thử nghiệm vào version liền trước, owner chạy lại toàn bộ correctness và timing; version sau phải giữ tối ưu trước đó trừ khi notebook giải thích lý do bỏ. Nếu profiling không xác nhận bottleneck dự kiến, đổi ý tối ưu hoặc thứ tự version trước khi chốt; vẫn lưu kết quả thử nghiệm không hiệu quả để phân tích. Ngân tổng hợp bảng so sánh cuối từ số liệu mỗi owner bàn giao.
